@@ -4,9 +4,8 @@ import axios from 'axios';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
-import { Droplets, Thermometer, Sun, Gauge, Activity } from 'lucide-react';
+import { Droplets, Thermometer, Sun, Gauge, Activity, Play, CheckCircle2, AlertTriangle, ShieldAlert } from 'lucide-react';
 
-// 引入 Day 5 的 AI 診斷畫廊組件
 import AiVisionGallery from './components/AiVisionGallery';
 
 const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5001';
@@ -15,9 +14,24 @@ export default function App() {
   const [telemetryHistory, setTelemetryHistory] = useState([]);
   const [latestData, setLatestData] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
+  
+  // Day 6 控制與 Log 狀態
+  const [actuationLogs, setActuationLogs] = useState([]);
+  const [isWatering, setIsWatering] = useState(false);
+  const [controlMessage, setControlMessage] = useState(null);
+
+  // 載入致動日誌
+  const fetchControlLogs = async () => {
+    try {
+      const res = await axios.get(`${SOCKET_SERVER_URL}/api/control/logs`);
+      setActuationLogs(res.data);
+    } catch (err) {
+      console.error("無法載入控制日誌:", err);
+    }
+  };
 
   useEffect(() => {
-    // 1. 先抓取最近歷史數據初始化圖表
+    // 1. 抓取歷史數據與控制日誌
     axios.get(`${SOCKET_SERVER_URL}/api/telemetry/recent?device_id=esp32_plant_01`)
       .then(res => {
         const formatted = res.data.map(d => ({
@@ -29,13 +43,15 @@ export default function App() {
       })
       .catch(err => console.error("無法抓取歷史數據:", err));
 
+    fetchControlLogs();
+
     // 2. 建立 Socket.io 即時連線
     const socket = io(SOCKET_SERVER_URL);
 
     socket.on('connect', () => setIsConnected(true));
     socket.on('disconnect', () => setIsConnected(false));
 
-    // 3. 監聽即時數據推播
+    // 監聽即時 Telemetry 數據
     socket.on('telemetry_update', (data) => {
       const formattedItem = {
         ...data,
@@ -45,13 +61,37 @@ export default function App() {
       setLatestData(formattedItem);
       setTelemetryHistory(prev => {
         const updated = [...prev, formattedItem];
-        if (updated.length > 30) updated.shift(); // 維持最新 30 筆數據滑動
+        if (updated.length > 30) updated.shift();
         return updated;
       });
     });
 
+    // 監聽最新致動 Log
+    socket.on('new_actuation_log', (log) => {
+      setActuationLogs(prev => [log, ...prev.slice(0, 9)]);
+    });
+
     return () => socket.disconnect();
   }, []);
+
+  // 觸發遠端澆水
+  const handleWatering = async (durationSec = 3) => {
+    setIsWatering(true);
+    setControlMessage(null);
+    try {
+      const res = await axios.post(`${SOCKET_SERVER_URL}/api/control/water`, {
+        device_id: 'esp32_plant_01',
+        tenant_id: 'demo_tenant',
+        duration_sec: durationSec
+      });
+      setControlMessage({ type: 'success', text: res.data.message });
+    } catch (err) {
+      const errorMsg = err.response?.data?.message || '澆水指令發送失敗';
+      setControlMessage({ type: 'error', text: errorMsg });
+    } finally {
+      setIsWatering(false);
+    }
+  };
 
   return (
     <div style={{ padding: '24px', backgroundColor: '#0f172a', minHeight: '100vh', color: '#f8fafc', fontFamily: 'sans-serif' }}>
@@ -66,7 +106,6 @@ export default function App() {
           </p>
         </div>
 
-        {/* 連線狀態標籤 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#1e293b', padding: '8px 16px', borderRadius: '20px' }}>
           <Activity size={18} color={isConnected ? '#22c55e' : '#ef4444'} />
           <span style={{ fontSize: '14px', color: isConnected ? '#22c55e' : '#ef4444', fontWeight: '600' }}>
@@ -77,8 +116,6 @@ export default function App() {
 
       {/* 4 大即時指標卡片 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px', marginBottom: '32px' }}>
-        
-        {/* 土壤濕度 */}
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#38bdf8', marginBottom: '8px' }}>
             <span style={{ fontSize: '14px', color: '#94a3b8' }}>土壤濕度</span>
@@ -89,7 +126,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* 環境溫度 */}
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#f43f5e', marginBottom: '8px' }}>
             <span style={{ fontSize: '14px', color: '#94a3b8' }}>環境溫度</span>
@@ -100,7 +136,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* 光照強度 */}
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#eab308', marginBottom: '8px' }}>
             <span style={{ fontSize: '14px', color: '#94a3b8' }}>光照強度</span>
@@ -111,7 +146,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* 水箱水位 */}
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#a855f7', marginBottom: '8px' }}>
             <span style={{ fontSize: '14px', color: '#94a3b8' }}>水箱水量</span>
@@ -119,6 +153,124 @@ export default function App() {
           </div>
           <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#f8fafc' }}>
             {latestData ? `${latestData.water_level}%` : '--'}
+          </div>
+        </div>
+      </div>
+
+      {/* Day 6: 遠端致動控制與紀錄區域 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', marginBottom: '32px' }}>
+        {/* 控制卡片 */}
+        <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Droplets color="#38bdf8" size={20} /> 遠端致動控制 (MQTT Downlink)
+          </h3>
+          <p style={{ fontSize: '14px', color: '#94a3b8', marginBottom: '20px' }}>
+            可手動下達澆水指令至 ESP32 裝置，內建水箱水位防乾燒保護機制。
+          </p>
+
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+            <button
+              onClick={() => handleWatering(3)}
+              disabled={isWatering}
+              style={{
+                flex: 1,
+                padding: '12px',
+                backgroundColor: '#0284c7',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px'
+              }}
+            >
+              <Play size={16} /> 澆水 3 秒
+            </button>
+            <button
+              onClick={() => handleWatering(5)}
+              disabled={isWatering}
+              style={{
+                flex: 1,
+                padding: '12px',
+                backgroundColor: '#0369a1',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px'
+              }}
+            >
+              <Play size={16} /> 澆水 5 秒
+            </button>
+          </div>
+
+          {controlMessage && (
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: '8px',
+              fontSize: '14px',
+              backgroundColor: controlMessage.type === 'success' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+              color: controlMessage.type === 'success' ? '#4ade80' : '#fca5a5',
+              border: `1px solid ${controlMessage.type === 'success' ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              {controlMessage.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+              {controlMessage.text}
+            </div>
+          )}
+        </div>
+
+        {/* 控制日誌 Log 面板 */}
+        <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', color: '#f8fafc' }}>
+            📋 致動歷史紀錄 (Actuation Logs)
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+            {actuationLogs.length === 0 ? (
+              <div style={{ color: '#64748b', fontSize: '14px' }}>目前尚無致動紀錄</div>
+            ) : (
+              actuationLogs.map((log, idx) => (
+                <div key={idx} style={{
+                  display: 'flex',
+                  justify: 'space-between',
+                  alignItems: 'center',
+                  padding: '8px 12px',
+                  backgroundColor: '#0f172a',
+                  borderRadius: '6px',
+                  border: '1px solid #334155',
+                  fontSize: '13px'
+                }}>
+                  <div>
+                    <span style={{ color: '#f8fafc', fontWeight: '500' }}>{log.action_type}</span>
+                    <span style={{ color: '#64748b', marginLeft: '8px' }}>({log.duration_sec}s)</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      backgroundColor: log.status === 'SUCCESS' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                      color: log.status === 'SUCCESS' ? '#4ade80' : '#fca5a5'
+                    }}>
+                      {log.status}
+                    </span>
+                    <span style={{ color: '#64748b', fontSize: '11px' }}>
+                      {new Date(log.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -142,7 +294,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* 葉片病害與診斷紀錄畫廊 */}
+      {/* AI 診斷畫廊 */}
       <AiVisionGallery deviceId="esp32_cam_01" />
     </div>
   );
