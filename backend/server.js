@@ -14,8 +14,9 @@ const app = express();
 
 app.use(cors({ origin: true, credentials: true }));
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  res.header("Access-Control-Allow-Origin", "*"); // 允許所有來源
+  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
   next();
 });
 
@@ -24,22 +25,22 @@ app.use(express.json());
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-  allowEIO3: true
+    cors: { origin: "*", methods: ["GET", "POST"] },
+    allowEIO3: true
 });
 
 // TimescaleDB 連線池
 const dbPool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
 });
 
 dbPool.connect((err) => {
-  if (err) console.error('❌ DB 連線失敗:', err.stack);
-  else console.log('✅ TimescaleDB 連线成功！(Port: 5433)');
+    if (err) console.error('❌ DB 連線失敗:', err.stack);
+    else console.log('✅ TimescaleDB 連线成功！(Port: 5433)');
 });
 
 // 啟動 BullMQ Worker 處理佇列資料
@@ -49,51 +50,88 @@ initTelemetryWorker(dbPool, io);
 const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL);
 
 mqttClient.on('connect', () => {
-  console.log('✅ 成功連接 EMQX MQTT Broker！');
-  mqttClient.subscribe('tenants/+/devices/+/telemetry');
+    console.log('✅ 成功連接 EMQX MQTT Broker！');
+    mqttClient.subscribe('tenants/+/devices/+/telemetry');
 });
 
 // MQTT 收到訊息：不再直接寫 DB，而是 Push 進 BullMQ 佇列
 mqttClient.on('message', async (topic, message) => {
-  try {
-    const payload = JSON.parse(message.toString());
-    
-    // 將數據推入 BullMQ 佇列 (Job)
-    await telemetryQueue.add('process_telemetry', payload, {
-      attempts: 3, // 若失敗自動重試 3 次
-      backoff: 1000, // 每次重試間隔 1 秒
-      removeOnComplete: true, // 處理完自動刪除 Log 節省記憶體
-    });
+    try {
+        const payload = JSON.parse(message.toString());
 
-    console.log(`[MQTT -> Queue] 📥 數據已推入 BullMQ 佇列 (Device: ${payload.device_id})`);
-  } catch (err) {
-    console.error('❌ 進入佇列失敗:', err.message);
-  }
+        // 將數據推入 BullMQ 佇列 (Job)
+        await telemetryQueue.add('process_telemetry', payload, {
+            attempts: 3, // 若失敗自動重試 3 次
+            backoff: 1000, // 每次重試間隔 1 秒
+            removeOnComplete: true, // 處理完自動刪除 Log 節省記憶體
+        });
+
+        console.log(`[MQTT -> Queue] 📥 數據已推入 BullMQ 佇列 (Device: ${payload.device_id})`);
+    } catch (err) {
+        console.error('❌ 進入佇列失敗:', err.message);
+    }
 });
 
 // REST API
 app.get('/api/telemetry/recent', async (req, res) => {
-  try {
-    const deviceId = req.query.device_id || 'esp32_plant_01';
-    const query = `
+    try {
+        const deviceId = req.query.device_id || 'esp32_plant_01';
+        const query = `
       SELECT time, soil_moisture, temperature, humidity, light_lux, water_level
       FROM sensor_telemetry
       WHERE device_id = $1
       ORDER BY time DESC
       LIMIT 50;
     `;
-    const result = await dbPool.query(query, [deviceId]);
-    res.json(result.rows.reverse());
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+        const result = await dbPool.query(query, [deviceId]);
+        res.json(result.rows.reverse());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
+
+// GET /api/ai/recent - 取得最新 AI 分析紀錄
+app.get('/api/ai/recent', async (req, res) => {
+    try {
+        const deviceId = req.query.device_id || 'esp32_cam_01';
+        const limit = parseInt(req.query.limit || '10');
+
+        const query = `
+        SELECT time, device_id, raw_image_path, processed_image_path, detections
+        FROM ai_image_analyses
+        WHERE device_id = $1
+        ORDER BY time DESC
+        LIMIT $2;
+      `;
+        const result = await dbPool.query(query, [deviceId, limit]);
+
+        // 拼接 MinIO 靜態圖片服務 URL (假設 MinIO Port 為 9000，Bucket 為 plant-images)
+        const minioBaseUrl = process.env.MINIO_PUBLIC_URL || 'http://localhost:9000/plant-images';
+
+        const formattedRows = result.rows.map(row => ({
+            time: row.time,
+            device_id: row.device_id,
+            raw_image_url: `${minioBaseUrl}/${row.raw_image_path}`,
+            processed_image_url: `${minioBaseUrl}/${row.processed_image_path}`,
+            detections: row.detections
+        }));
+
+        res.json(formattedRows);
+    } catch (err) {
+        console.error('❌ 撈取 AI 紀錄失敗:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
 io.on('connection', (socket) => {
-  console.log(`🔌 Web 儀表板已連線: ${socket.id}`);
+    console.log(`🔌 Web 儀表板已連線: ${socket.id}`);
 });
 
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
-  console.log(`🚀 後端伺服器已啟動於 http://localhost:${PORT}`);
+    console.log(`🚀 後端伺服器已啟動於 http://localhost:${PORT}`);
 });
+
+

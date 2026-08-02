@@ -4,7 +4,10 @@ import axios from 'axios';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
-import { Droplets, Thermometer, Sun, Gauge, Activity, AlertTriangle } from 'lucide-react';
+import { Droplets, Thermometer, Sun, Gauge, Activity } from 'lucide-react';
+
+// 引入 Day 5 的 AI 診斷畫廊組件
+import AiVisionGallery from './components/AiVisionGallery';
 
 const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5001';
 
@@ -138,6 +141,9 @@ export default function App() {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* 葉片病害與診斷紀錄畫廊 */}
+      <AiVisionGallery deviceId="esp32_cam_01" />
     </div>
   );
 }
