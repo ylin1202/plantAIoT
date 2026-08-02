@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # 1. TimescaleDB (含 PostgreSQL 時序擴充)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: aiot-timescaledb
+    restart: always
+    environment:
+      POSTGRES_DB: aiot_db
+      POSTGRES_USER: aiot_user
+      POSTGRES_PASSWORD: aiot_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # 2. Redis (供 BullMQ 佇列與快取使用)
+  redis:
+    image: redis:7-alpine
+    container_name: aiot-redis
+    restart: always
+    ports:
+      - "6380:6379"
+
+  # 3. EMQX (企業級 MQTT Broker)
+  emqx:
+    image: emqx/emqx:5.3.0
+    container_name: aiot-emqx
+    restart: always
+    ports:
+      - "1883:1883"     # MQTT TCP 埠口
+      - "18083:18083"   # EMQX Dashboard 管理後台 (預設帳密: admin / public)
+
+  # 4. MinIO (輕量化 S3 物件儲存，用來存 ESP32-CAM 傳上來的照片)
+  minio:
+    image: minio/minio:RELEASE.2023-09-04T19-57-37Z
+    container_name: aiot-minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_password
+    ports:
+      - "9000:9000"     # S3 API 埠口
+      - "9001:9001"     # MinIO Web 控制台
+
+volumes:
+  timescaledb_data:
