@@ -64,3 +64,16 @@ CREATE TABLE actuation_logs (
     duration_sec INT NOT NULL,         -- 抽水持續時間 (秒)
     status      VARCHAR(20) NOT NULL  -- SUCCESS, REJECTED_NO_WATER, FAILED
 );
+
+
+-- 建立 AI 影像分析紀錄表
+CREATE TABLE IF NOT EXISTS ai_image_analyses (
+    time TIMESTAMPTZ NOT NULL,
+    device_id VARCHAR(64) NOT NULL,
+    raw_image_path TEXT NOT NULL,
+    processed_image_path TEXT NOT NULL,
+    detections JSONB DEFAULT '[]'::jsonb
+);
+
+-- 轉為 TimescaleDB 超級表 (Hypertable)
+SELECT create_hypertable('ai_image_analyses', 'time', if_not_exists => TRUE);
