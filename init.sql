@@ -77,3 +77,32 @@ CREATE TABLE IF NOT EXISTS ai_image_analyses (
 
 -- 轉為 TimescaleDB 超級表 (Hypertable)
 SELECT create_hypertable('ai_image_analyses', 'time', if_not_exists => TRUE);
+
+--
+
+-- 1.1 建立每小時自動降採樣視圖 (加上 WITH NO DATA 避免 Transaction 限制)
+CREATE MATERIALIZED VIEW sensor_telemetry_hourly
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 hour', time) AS bucket,
+    device_id,
+    AVG(soil_moisture) AS avg_soil_moisture,
+    AVG(temperature) AS avg_temperature,
+    AVG(humidity) AS avg_humidity,
+    AVG(light_lux) AS avg_light_lux,
+    AVG(water_level) AS avg_water_level
+FROM sensor_telemetry
+GROUP BY bucket, device_id
+WITH NO DATA;
+
+-- 1.2 設定 Continuous Aggregation 自動更新 Policy (每 30 分鐘自動刷入新數據)
+SELECT add_continuous_aggregate_policy('sensor_telemetry_hourly',
+    start_offset => INTERVAL '3 days',
+    end_offset => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '30 minutes');
+
+-- 1.3 手動刷入既有歷史數據一次 (非必要，但能立刻讓視圖有資料)
+CALL refresh_continuous_aggregate('sensor_telemetry_hourly', NULL, NULL);
+
+-- 1.4 設定過期數據自動清理 Policy (超過 90 天自動清理原始細粒度數據)
+SELECT add_retention_policy('sensor_telemetry', INTERVAL '90 days');

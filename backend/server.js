@@ -1,4 +1,3 @@
-// backend/server.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -12,8 +11,6 @@ const { telemetryQueue, initTelemetryWorker } = require('./queue');
 
 // Telegram
 const { checkAndTriggerAlert, initBotPolling } = require('./telegram');
-
-
 
 const app = express();
 
@@ -71,9 +68,6 @@ dbPool.connect(async (err, client, release) => {
   }
 });
 
-// 啟動 BullMQ Worker 處理佇列資料
-initTelemetryWorker(dbPool, io);
-
 // MQTT Client 連線
 const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883');
 
@@ -122,7 +116,37 @@ app.get('/api/telemetry/recent', async (req, res) => {
   }
 });
 
-// 2. GET /api/ai/recent
+// 2. GET /api/telemetry/history (多時段降採樣歷史數據 API)
+app.get('/api/telemetry/history', async (req, res) => {
+  const { range = '24h', device_id = 'esp32_plant_01' } = req.query;
+  
+  try {
+    let query = '';
+    if (range === '24h') {
+      // 24小時：撈取原始細粒度數據 (最新 100 筆)
+      query = `SELECT time, soil_moisture, temperature, humidity, light_lux, water_level 
+               FROM sensor_telemetry WHERE device_id = $1 ORDER BY time DESC LIMIT 100`;
+    } else if (range === '7d') {
+      // 7天：撈取 TimescaleDB Continuous Aggregation 每小時平均值
+      query = `SELECT bucket AS time, avg_soil_moisture AS soil_moisture, avg_temperature AS temperature, 
+                      avg_humidity AS humidity, avg_light_lux AS light_lux, avg_water_level AS water_level 
+               FROM sensor_telemetry_hourly WHERE device_id = $1 AND bucket >= NOW() - INTERVAL '7 days' ORDER BY bucket ASC`;
+    } else if (range === '30d') {
+      // 30天：撈取 TimescaleDB Continuous Aggregation 每小時平均值
+      query = `SELECT bucket AS time, avg_soil_moisture AS soil_moisture, avg_temperature AS temperature, 
+                      avg_humidity AS humidity, avg_light_lux AS light_lux, avg_water_level AS water_level 
+               FROM sensor_telemetry_hourly WHERE device_id = $1 AND bucket >= NOW() - INTERVAL '30 days' ORDER BY bucket ASC`;
+    }
+
+    const dbRes = await dbPool.query(query, [device_id]);
+    res.json({ success: true, data: dbRes.rows });
+  } catch (err) {
+    console.error('❌ 撈取歷史數據失敗:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. GET /api/ai/recent (撈取最新 AI 診斷紀錄)
 app.get('/api/ai/recent', async (req, res) => {
   try {
     const deviceId = req.query.device_id || 'esp32_cam_01';
@@ -154,7 +178,7 @@ app.get('/api/ai/recent', async (req, res) => {
   }
 });
 
-// 3. POST /api/control/water - Day 6 手動遠端澆水 API
+// 4. POST /api/control/water - 手動遠端澆水 API
 app.post('/api/control/water', async (req, res) => {
   const { device_id = 'esp32_plant_01', tenant_id = 'demo_tenant', duration_sec = 3 } = req.body;
 
@@ -208,7 +232,28 @@ app.post('/api/control/water', async (req, res) => {
   }
 });
 
-// 4. GET /api/control/logs - 取得最近的致動歷史日誌 API
+// 5. POST /api/camera/capture - Web 觸發手動拍照診斷 API
+app.post('/api/camera/capture', async (req, res) => {
+  try {
+    const cameraTopic = `tenants/demo_tenant/devices/esp32_cam_01/control`;
+    mqttClient.publish(cameraTopic, JSON.stringify({
+      action: 'CAPTURE_PHOTO',
+      timestamp: new Date().toISOString()
+    }));
+
+    await dbPool.query(
+      `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) VALUES ($1, $2, $3, $4)`,
+      ['esp32_cam_01', 'WEB_CAPTURE', 0, 'SUCCESS']
+    );
+
+    res.json({ success: true, message: 'Camera capture triggered successfully.' });
+  } catch (err) {
+    console.error('❌ 觸發拍照 API 失敗:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. GET /api/control/logs - 取得致動歷史日誌 API
 app.get('/api/control/logs', async (req, res) => {
   try {
     const result = await dbPool.query(

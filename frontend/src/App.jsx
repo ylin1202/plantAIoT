@@ -4,7 +4,7 @@ import axios from 'axios';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
-import { Droplets, Thermometer, Sun, Gauge, Activity, Play, CheckCircle2, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { Droplets, Thermometer, Sun, Gauge, Activity, Play, CheckCircle2, AlertTriangle, Camera } from 'lucide-react';
 
 import AiVisionGallery from './components/AiVisionGallery';
 
@@ -18,6 +18,7 @@ export default function App() {
   // Day 6 控制與 Log 狀態
   const [actuationLogs, setActuationLogs] = useState([]);
   const [isWatering, setIsWatering] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
   const [controlMessage, setControlMessage] = useState(null);
 
   // 載入致動日誌
@@ -93,6 +94,24 @@ export default function App() {
     }
   };
 
+  // 觸發手動拍照診斷
+  const handleCameraCapture = async () => {
+    setIsCapturing(true);
+    setControlMessage(null);
+    try {
+      const res = await axios.post(`${SOCKET_SERVER_URL}/api/camera/capture`);
+      if (res.data.success) {
+        setControlMessage({ type: 'success', text: '📸 拍照指令已下達！ESP32-CAM 拍攝與 AI 分析中...' });
+      }
+    } catch (err) {
+      console.error("❌ 拍照 API 呼叫失敗:", err);
+      const errorMsg = err.response?.data?.error || '拍照指令發送失敗';
+      setControlMessage({ type: 'error', text: errorMsg });
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
   return (
     <div style={{ padding: '24px', backgroundColor: '#0f172a', minHeight: '100vh', color: '#f8fafc', fontFamily: 'sans-serif' }}>
       {/* 頁首 Header */}
@@ -157,7 +176,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Day 6: 遠端致動控制與紀錄區域 */}
+      {/* 遠端致動控制與紀錄區域 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         {/* 控制卡片 */}
         <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155' }}>
@@ -165,15 +184,16 @@ export default function App() {
             <Droplets color="#38bdf8" size={20} /> 遠端致動控制 (MQTT Downlink)
           </h3>
           <p style={{ fontSize: '14px', color: '#94a3b8', marginBottom: '20px' }}>
-            可手動下達澆水指令至 ESP32 裝置，內建水箱水位防乾燒保護機制。
+            可手動下達澆水指令至 ESP32 裝置或驅動 ESP32-CAM 手動拍照 AI 診斷。
           </p>
 
-          <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
             <button
               onClick={() => handleWatering(3)}
               disabled={isWatering}
               style={{
                 flex: 1,
+                minWidth: '110px',
                 padding: '12px',
                 backgroundColor: '#0284c7',
                 color: '#fff',
@@ -194,6 +214,7 @@ export default function App() {
               disabled={isWatering}
               style={{
                 flex: 1,
+                minWidth: '110px',
                 padding: '12px',
                 backgroundColor: '#0369a1',
                 color: '#fff',
@@ -208,6 +229,27 @@ export default function App() {
               }}
             >
               <Play size={16} /> 澆水 5 秒
+            </button>
+            <button
+              onClick={handleCameraCapture}
+              disabled={isCapturing}
+              style={{
+                flex: 1,
+                minWidth: '130px',
+                padding: '12px',
+                backgroundColor: '#6366f1',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px'
+              }}
+            >
+              <Camera size={16} /> 拍照 AI 診斷
             </button>
           </div>
 
