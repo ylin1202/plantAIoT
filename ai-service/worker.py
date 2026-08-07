@@ -3,6 +3,7 @@ import json
 import time
 import redis
 import psycopg2
+import requests  # 新增: 用於發送 Telegram API
 from ultralytics import YOLO
 from dotenv import load_dotenv
 from minio import Minio
@@ -28,7 +29,34 @@ minio_client = Minio(
     secure=False
 )
 
-# 4. 資料庫連線 function
+# 4. Telegram API 設定
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+def send_telegram_photo(image_path, caption):
+    """將標註後的圖片與診斷結果直接推播給 Telegram 用戶"""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ 未設定 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，跳過 Telegram 推播")
+        return
+        
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        with open(image_path, 'rb') as photo:
+            payload = {
+                'chat_id': CHAT_ID,
+                'caption': caption,
+                'parse_mode': 'Markdown'
+            }
+            files = {'photo': photo}
+            res = requests.post(url, data=payload, files=files)
+            if res.status_code == 200:
+                print("📱 [Telegram Bot] 成功將 AI 診斷照片推播至手機！")
+            else:
+                print(f"❌ Telegram 推播失敗: {res.text}")
+    except Exception as e:
+        print(f"❌ 發送 Telegram 照片失敗: {str(e)}")
+
+# 5. 資料庫連線 function
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv('DB_HOST', 'localhost'),
@@ -63,11 +91,13 @@ def process_ai_task(job_data_str):
 
         # 2. 統計標籤與信心度
         detections = []
+        labels_summary = []
         for box in results[0].boxes:
             cls_id = int(box.cls[0])
             label = model.names[cls_id]
             conf = float(box.conf[0])
             detections.append({"label": label, "confidence": round(conf, 2)})
+            labels_summary.append(f"{label} ({round(conf * 100, 1)}%)")
 
         # 3. 上傳標註圖至 MinIO
         processed_image_name = f"processed_{image_name}"
@@ -96,12 +126,25 @@ def process_ai_task(job_data_str):
         cur.close()
         conn.close()
 
+        print(f"✅ [AI Worker] 分析完成且已存入 DB！")
+        print(f"🔍 偵測結果: {detections}")
+
+        # 5. 組成 Telegram 卡片並回傳標註照片
+        detection_text = ", ".join(labels_summary) if labels_summary else "No targets detected"
+        caption = (
+            f"📸 *【AI Plant Vision Diagnosis】*\n"
+            f"───────────────────\n"
+            f"📡 Device: `{device_id}`\n"
+            f"🏷️ Detected: *{detection_text}*\n"
+            f"⏰ Processed at: `{time.strftime('%H:%M:%S')}`"
+        )
+        
+        # 將標註後的 local_output 圖檔發給 Telegram
+        send_telegram_photo(local_output, caption)
+
         # 清理暫存檔
         if os.path.exists(local_input): os.remove(local_input)
         if os.path.exists(local_output): os.remove(local_output)
-
-        print(f"✅ [AI Worker] 分析完成且已存入 DB！")
-        print(f"🔍 偵測結果: {detections}")
 
     except Exception as e:
         print(f"❌ [AI Worker] 處理失敗: {str(e)}")

@@ -28,23 +28,39 @@ async function sendTelegramMessage(text) {
     }
 }
 
-// 2. 自動向 Telegram 註冊官方選單按鈕 (Set My Commands)
+// 2. 發送圖片訊息 (用於 AI 診斷圖文推播)
+async function sendTelegramPhoto(photoUrl, caption) {
+    if (!BOT_TOKEN || !CHAT_ID) return;
+    try {
+        await axios.post(`${TELEGRAM_API}/sendPhoto`, {
+            chat_id: CHAT_ID,
+            photo: photoUrl,
+            caption: caption,
+            parse_mode: 'Markdown'
+        });
+    } catch (err) {
+        console.error('❌ 發送 Telegram 照片失敗:', err.response?.data?.description || err.message);
+    }
+}
+
+// 3. 自動向 Telegram 註冊官方選單按鈕 (Set My Commands)
 async function registerBotCommands() {
     if (!BOT_TOKEN) return;
     try {
         await axios.post(`${TELEGRAM_API}/setMyCommands`, {
             commands: [
                 { command: 'status', description: 'Get real-time plant status report' },
-                { command: 'water', description: 'Remotely trigger watering for 3 seconds' }
+                { command: 'water', description: 'Remotely trigger watering for 3 seconds' },
+                { command: 'photo', description: 'Trigger ESP32-CAM to take a photo & AI analysis' }
             ]
         });
-        console.log('✅ [Telegram Bot] 已成功註冊官方英文選單指令！');
+        console.log('✅ [Telegram Bot] 已成功註冊官方英文選單指令 (/status, /water, /photo)！');
     } catch (err) {
         console.error('❌ 註冊 Telegram 選單失敗:', err.message);
     }
 }
 
-// 3. 檢查數據並觸發異常告警
+// 4. 檢查數據並觸發異常告警
 function checkAndTriggerAlert(telemetry) {
     const now = Date.now();
     if (now - lastAlertTime < ALERT_COOLDOWN_MS) return;
@@ -68,7 +84,7 @@ function checkAndTriggerAlert(telemetry) {
     }
 }
 
-// 4. Telegram Bot Long Polling 指令對話監聽
+// 5. Telegram Bot Long Polling 指令對話監聽
 let lastUpdateId = 0;
 function initBotPolling(dbPool, mqttClient) {
     if (!BOT_TOKEN) return;
@@ -76,7 +92,7 @@ function initBotPolling(dbPool, mqttClient) {
     // 啟動時自動幫你向 Telegram 註冊選單按鈕
     registerBotCommands();
 
-    console.log('🤖 [Telegram Bot] 啟動指令對話監聽器 (/status, /water)...');
+    console.log('🤖 [Telegram Bot] 啟動指令對話監聽器 (/status, /water, /photo)...');
 
     setInterval(async () => {
         try {
@@ -111,7 +127,7 @@ function initBotPolling(dbPool, mqttClient) {
                             `☀️ Light Intensity: *${data.light_lux} Lux*\n` +
                             `🚰 Water Level: *${data.water_level}%*\n` +
                             `⏰ Updated at: \`${new Date(data.time).toLocaleTimeString()}\`\n\n` +
-                            `💡 Type or tap \`/water\` to trigger remote watering.`;
+                            `💡 Type or tap \`/water\` to trigger remote watering, or \`/photo\` for AI diagnosis.`;
                         await sendTelegramMessage(reply);
                     } else {
                         await sendTelegramMessage('❌ No sensor telemetry data available.');
@@ -138,13 +154,28 @@ function initBotPolling(dbPool, mqttClient) {
                         await sendTelegramMessage('💦 *Watering command sent!* (Pump active for 3 seconds)');
                     }
                 }
-                // 指令 3: /start 或歡迎提示
+                // 指令 3: /photo - 遠端觸發相機拍照與 AI 診斷
+                else if (command === '/photo') {
+                    await sendTelegramMessage('📸 *[Request Sent]* Triggering ESP32-CAM to capture image... Please wait for AI diagnosis.');
+
+                    const cameraTopic = `tenants/demo_tenant/devices/esp32_cam_01/control`;
+                    mqttClient.publish(cameraTopic, JSON.stringify({
+                        action: 'CAPTURE_PHOTO',
+                        timestamp: new Date().toISOString()
+                    }));
+
+                    await dbPool.query(
+                        `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) VALUES ($1, $2, $3, $4)`,
+                        ['esp32_cam_01', 'TELEGRAM_CAPTURE', 0, 'SUCCESS']
+                    );
+                }
+                // 指令 4: /start 或歡迎提示
                 else if (command === '/start') {
-                    await sendTelegramMessage('👋 Welcome to the AIoT Smart Plant Monitoring Bot!\n\nAvailable commands:\n`/status` - Get real-time status report\n`/water` - Trigger remote watering (3s)');
+                    await sendTelegramMessage('👋 Welcome to the AIoT Smart Plant Monitoring Bot!\n\nAvailable commands:\n`/status` - Get real-time status report\n`/water` - Trigger remote watering (3s)\n`/photo` - Trigger ESP32-CAM & AI analysis');
                 } 
-                // 指令 4: 未知指令
+                // 指令 5: 未知指令
                 else {
-                    await sendTelegramMessage('🤖 Unrecognized command.\n\nPlease choose an option:\n`/status` - Get status report\n`/water` - Trigger watering');
+                    await sendTelegramMessage('🤖 Unrecognized command.\n\nPlease choose an option:\n`/status` - Get status report\n`/water` - Trigger watering\n`/photo` - Trigger AI diagnosis');
                 }
             }
         } catch (err) {
@@ -155,5 +186,7 @@ function initBotPolling(dbPool, mqttClient) {
 
 module.exports = {
     checkAndTriggerAlert,
-    initBotPolling
+    initBotPolling,
+    sendTelegramMessage,
+    sendTelegramPhoto
 };

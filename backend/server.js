@@ -14,6 +14,7 @@ const { telemetryQueue, initTelemetryWorker } = require('./queue');
 const { checkAndTriggerAlert, initBotPolling } = require('./telegram');
 
 
+
 const app = express();
 
 // CORS 設定
@@ -231,4 +232,5 @@ server.listen(PORT, () => {
 
   // 啟動 Telegram Bot 互動監聽
   initBotPolling(dbPool, mqttClient);
+  initTelemetryWorker(dbPool, io, mqttClient);
 });
