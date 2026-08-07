@@ -10,6 +10,10 @@ require('dotenv').config();
 // 引入 BullMQ 佇列模組
 const { telemetryQueue, initTelemetryWorker } = require('./queue');
 
+// Telegram
+const { checkAndTriggerAlert, initBotPolling } = require('./telegram');
+
+
 const app = express();
 
 // CORS 設定
@@ -82,15 +86,18 @@ mqttClient.on('message', async (topic, message) => {
   try {
     const payload = JSON.parse(message.toString());
 
+    // 1. 推入 BullMQ 佇列
     await telemetryQueue.add('process_telemetry', payload, {
       attempts: 3,
       backoff: 1000,
       removeOnComplete: true,
     });
 
-    console.log(`[MQTT -> Queue] 📥 數據已推入 BullMQ 佇列 (Device: ${payload.device_id})`);
+    // 2. Telegram 缺水/低水位異常主動告警檢查
+    checkAndTriggerAlert(payload);
+
   } catch (err) {
-    console.error('❌ 進入佇列失敗:', err.message);
+    console.error('❌ 處理 MQTT 訊息失敗:', err.message);
   }
 });
 
@@ -221,4 +228,7 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
   console.log(`🚀 後端伺服器已啟動於 http://localhost:${PORT}`);
+
+  // 啟動 Telegram Bot 互動監聽
+  initBotPolling(dbPool, mqttClient);
 });
