@@ -80,29 +80,58 @@ SELECT create_hypertable('ai_image_analyses', 'time', if_not_exists => TRUE);
 
 --
 
--- 1.1 建立每小時自動降採樣視圖 (加上 WITH NO DATA 避免 Transaction 限制)
-CREATE MATERIALIZED VIEW sensor_telemetry_hourly
+-- ============================================================
+-- 1. 建立「每小時降採樣視圖」(Continuous Aggregate View)
+-- 自動將 sensor_telemetry 依 1 小時 (1 hour) 時間視窗預先聚合
+-- ============================================================
+CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_telemetry_hourly
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('1 hour', time) AS bucket,
     device_id,
     AVG(soil_moisture) AS avg_soil_moisture,
+    MIN(soil_moisture) AS min_soil_moisture,
+    MAX(soil_moisture) AS max_soil_moisture,
+    
     AVG(temperature) AS avg_temperature,
+    MIN(temperature) AS min_temperature,
+    MAX(temperature) AS max_temperature,
+    
     AVG(humidity) AS avg_humidity,
     AVG(light_lux) AS avg_light_lux,
-    AVG(water_level) AS avg_water_level
+    AVG(water_level) AS avg_water_level,
+    COUNT(*) AS sample_count
 FROM sensor_telemetry
 GROUP BY bucket, device_id
 WITH NO DATA;
 
--- 1.2 設定 Continuous Aggregation 自動更新 Policy (每 30 分鐘自動刷入新數據)
+-- ============================================================
+-- 2. 設定 Continuous Aggregate 的自動更新 Policy
+-- 規定：每 30 分鐘自動背景執行一次
+-- 刷新範圍：更新過去 3 天到 1 小時前的數據 (確保歷史補傳數據能被算入)
+-- ============================================================
 SELECT add_continuous_aggregate_policy('sensor_telemetry_hourly',
     start_offset => INTERVAL '3 days',
-    end_offset => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '30 minutes');
+    end_offset   => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '30 minutes'
+);
 
--- 1.3 手動刷入既有歷史數據一次 (非必要，但能立刻讓視圖有資料)
-CALL refresh_continuous_aggregate('sensor_telemetry_hourly', NULL, NULL);
+-- ============================================================
+-- 3. 設定「過期數據自動清理策略」(Data Retention Policy)
+-- A. 原始高頻秒級數據 (sensor_telemetry)：只保留 30 天，超過自動背景刪除
+-- B. AI 診斷影像紀錄 (ai_image_analyses)：只保留 90 天
+-- C. 降採樣後的每小時視圖 (sensor_telemetry_hourly)：保留 365 天 (一年)
+-- ============================================================
 
--- 1.4 設定過期數據自動清理 Policy (超過 90 天自動清理原始細粒度數據)
-SELECT add_retention_policy('sensor_telemetry', INTERVAL '90 days');
+-- 設定原始感測器數據 30 天後自動清除
+SELECT add_retention_policy('sensor_telemetry', INTERVAL '30 days');
+
+-- 設定 AI 診斷紀錄 90 天後自動清除
+SELECT add_retention_policy('ai_image_analyses', INTERVAL '90 days');
+
+-- 設定降採樣視圖 365 天後自動清除
+SELECT add_continuous_aggregate_policy('sensor_telemetry_hourly',
+    start_offset => INTERVAL '1 year',
+    end_offset   => INTERVAL '30 days',
+    schedule_interval => INTERVAL '1 day'
+);
