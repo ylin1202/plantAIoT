@@ -266,6 +266,34 @@ app.get('/api/control/logs', async (req, res) => {
   }
 });
 
+// ==================== AI 診斷紀錄查詢 API (已修正欄位) ====================
+app.get('/api/ai-analyses', async (req, res) => {
+  try {
+    const deviceId = req.query.device_id || 'esp32_plant_01';
+    const limit = parseInt(req.query.limit) || 6;
+
+    // 💡 修正：移除不存在的 id 欄位，改以 time 進行倒序排序 
+    const query = `
+      SELECT time, device_id, raw_image_path, processed_image_path, detections 
+      FROM ai_image_analyses 
+      WHERE device_id = $1 
+      ORDER BY time DESC 
+      LIMIT $2;
+    `;
+    const { rows } = await dbPool.query(query, [deviceId, limit]);
+    res.json(rows);
+  } catch (err) {
+    console.error("❌ 抓取 AI 分析紀錄失敗:", err);
+    res.status(500).json({ error: "無法讀取 AI 診斷紀錄" });
+  }
+});
+
+// 相容舊版 API 路徑
+app.get('/api/ai/recent', async (req, res) => {
+  const deviceId = req.query.device_id || 'esp32_plant_01';
+  const limit = req.query.limit || 6;
+  res.redirect(`/api/ai-analyses?device_id=${deviceId}&limit=${limit}`);
+});
 // ==================== Socket.io 連線 ====================
 io.on('connection', (socket) => {
   console.log(`🔌 Web 儀表板已連線: ${socket.id}`);
