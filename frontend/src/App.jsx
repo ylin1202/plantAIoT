@@ -8,7 +8,7 @@ import { Droplets, Thermometer, Sun, Gauge, Activity, Play, CheckCircle2, AlertT
 
 import AiVisionGallery from './components/AiVisionGallery';
 
-const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5001';
+const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5002';
 
 export default function App() {
   const [telemetryHistory, setTelemetryHistory] = useState([]);

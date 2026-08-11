@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, RefreshCw, CheckCircle2, AlertCircle, Activity } from 'lucide-react';
+import { Camera, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 
-const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5001';
+const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5002';
 const MINIO_ENDPOINT = import.meta.env.VITE_MINIO_ENDPOINT || 'http://localhost:9000';
 const BUCKET_NAME = 'plant-images';
 
@@ -11,10 +11,10 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
 
   const fetchAiRecords = async () => {
     try {
-      // 優先使用新版 AI 診斷紀錄 API，相容備用舊 API
-      let res = await fetch(`${SOCKET_SERVER_URL}/api/ai-analyses?device_id=${deviceId}&limit=6`);
+      // 請求 AI 診斷紀錄 API (向後端要求 3 筆即可)
+      let res = await fetch(`${SOCKET_SERVER_URL}/api/ai-analyses?device_id=${deviceId}&limit=3`);
       if (!res.ok) {
-        res = await fetch(`${SOCKET_SERVER_URL}/api/ai/recent?device_id=${deviceId}&limit=6`);
+        res = await fetch(`${SOCKET_SERVER_URL}/api/ai/recent?device_id=${deviceId}&limit=3`);
       }
 
       if (res.ok) {
@@ -34,21 +34,19 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
     return () => clearInterval(interval);
   }, [deviceId]);
 
-  // 💡 關鍵修復 1：安全解析完整 MinIO 圖片網址
+  // 解析 MinIO 圖片完整網址
   const getImageUrl = (item) => {
-    // 優先使用 processed，沒有則退回 raw
     const imgPath = item.processed_image_path || item.processed_image_url || item.raw_image_path || item.raw_image_url;
     
     if (!imgPath) return 'https://via.placeholder.com/300x200?text=No+Image';
     
-    // 如果已經包含 http 則直接回傳，否則自動拼接 MinIO 9000 完整 Endpoint
     if (imgPath.startsWith('http')) {
       return imgPath;
     }
     return `${MINIO_ENDPOINT}/${BUCKET_NAME}/${imgPath}`;
   };
 
-  // 💡 關鍵修復 2：安全解析 JSON 或 Array 格式的 Detections
+  // 解析 Detections 陣列
   const parseDetections = (detectionsData) => {
     if (!detectionsData) return [];
     if (typeof detectionsData === 'string') {
@@ -68,6 +66,9 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
       </div>
     );
   }
+
+  // 強制切割僅取最新的前 3 筆紀錄
+  const displayRecords = records.slice(0, 3);
 
   return (
     <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155', marginTop: '32px' }}>
@@ -96,21 +97,19 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
         </button>
       </div>
 
-      {records.length === 0 ? (
+      {displayRecords.length === 0 ? (
         <div style={{ color: '#94a3b8', textAlign: 'center', padding: '40px 0' }}>
           目前尚無 AI 分析影像紀錄，請按上方按鈕進行拍照診斷
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
-          {records.map((item, idx) => {
+          {displayRecords.map((item, idx) => {
             const imageUrl = getImageUrl(item);
             const detections = parseDetections(item.detections);
             const mainDetection = detections[0] || {};
             
-            // 相容舊版 label 與新版 diagnosis
             const diagResult = mainDetection.diagnosis || mainDetection.label || 'Healthy';
             const isHealthy = diagResult === 'Healthy';
-            const confidenceVal = mainDetection.confidence ? (mainDetection.confidence > 1 ? mainDetection.confidence : mainDetection.confidence * 100).toFixed(0) : '95';
 
             return (
               <div key={idx} style={{ backgroundColor: '#0f172a', borderRadius: '10px', overflow: 'hidden', border: '1px solid #334155' }}>
@@ -163,7 +162,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
                         fontWeight: '600' 
                       }}>
                         {isHealthy ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-                        {diagResult} ({confidenceVal}%)
+                        {diagResult}
                       </span>
                     </div>
 
