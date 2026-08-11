@@ -26,40 +26,57 @@ const MQTT_BROKER = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
 const mqttClient = mqtt.connect(MQTT_BROKER);
 
 const BUCKET_NAME = process.env.MINIO_BUCKET || 'plant-images';
-const SAMPLE_IMAGE_PATH = path.join(__dirname, 'sample_plant.jpg');
 const CONTROL_TOPIC = 'tenants/demo_tenant/devices/esp32_cam_01/control';
 
-// 下載一張真實植物/水果的測試照片
-function ensureSampleImage() {
+// 📸 實拍照片配置（請將照片放在與此檔相同的目錄下）
+const LOCAL_FOLDER = __dirname;
+const CUSTOM_IMAGES = ['plant1.jpg', 'plant2.jpg', 'plant3.jpg'];
+let imageIndex = 0;
+
+// 下載網路範例照片（備用機制）
+function downloadFallbackImage(targetPath) {
   return new Promise((resolve, reject) => {
-    if (fs.existsSync(SAMPLE_IMAGE_PATH)) {
-      return resolve(SAMPLE_IMAGE_PATH);
-    }
-    console.log('⬇️ 正在下載真實植物範例圖片以供 ESP32-CAM 模擬...');
+    console.log('⬇️ 未檢測到實拍照片，正在下載預設植物圖片以供模擬...');
     const imageUrl = 'https://images.unsplash.com/photo-1530836369250-ef72a3f5cda8?w=640&q=80';
-    
+
     https.get(imageUrl, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302) {
         https.get(res.headers.location, (redirectRes) => {
-          const fileStream = fs.createWriteStream(SAMPLE_IMAGE_PATH);
+          const fileStream = fs.createWriteStream(targetPath);
           redirectRes.pipe(fileStream);
           fileStream.on('finish', () => {
             fileStream.close();
-            resolve(SAMPLE_IMAGE_PATH);
+            resolve(targetPath);
           });
         });
       } else {
-        const fileStream = fs.createWriteStream(SAMPLE_IMAGE_PATH);
+        const fileStream = fs.createWriteStream(targetPath);
         res.pipe(fileStream);
         fileStream.on('finish', () => {
           fileStream.close();
-          resolve(SAMPLE_IMAGE_PATH);
+          resolve(targetPath);
         });
       }
-    }).on('error', (err) => {
-      reject(err);
-    });
+    }).on('error', (err) => reject(err));
   });
+}
+
+// 動態獲取下一張待傳輸的照片 (固定使用 plant1.jpg)
+async function getNextSampleImage() {
+  const targetImage = path.join(LOCAL_FOLDER, 'plant1.jpg');
+  
+  if (fs.existsSync(targetImage)) {
+    console.log(`🖼️ [ESP32-CAM 模擬器] 使用實拍照片: plant1.jpg`);
+    return targetImage;
+  }
+
+  // 若無指定則使用 sample_plant.jpg
+  const defaultSamplePath = path.join(LOCAL_FOLDER, 'sample_plant.jpg');
+  if (fs.existsSync(defaultSamplePath)) {
+    return defaultSamplePath;
+  }
+
+  return await downloadFallbackImage(defaultSamplePath);
 }
 
 // 執行拍照與上傳 MinIO / 推派 AI 佇列的核心函式
@@ -71,14 +88,14 @@ async function triggerCameraAndAI() {
       console.log(`🪣 自動建立 MinIO Bucket: ${BUCKET_NAME}`);
     }
 
-    const imagePath = await ensureSampleImage();
+    const imagePath = await getNextSampleImage();
     const timestamp = Date.now();
     const imageName = `capture_${timestamp}.jpg`;
     const deviceId = 'esp32_cam_01';
 
     // 1. 上傳真實照片至 MinIO
     await minioClient.fPutObject(BUCKET_NAME, imageName, imagePath, {
-      'Content-Type': 'image/jpeg'
+      'Content-Type': 'image/jpeg',
     });
     console.log(`📸 [ESP32-CAM 模擬器] 成功拍照並上傳至 MinIO: ${imageName}`);
 
@@ -86,7 +103,7 @@ async function triggerCameraAndAI() {
     const jobPayload = {
       device_id: deviceId,
       image_name: imageName,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
 
     // 3. 推派任務至 Redis List 供 Python Worker 讀取
