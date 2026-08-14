@@ -10,6 +10,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Fetch recent AI diagnosis records from the backend API
   const fetchAiRecords = async () => {
     try {
       let res = await fetch(`${SOCKET_SERVER_URL}/api/ai-analyses?device_id=${deviceId}&limit=3`);
@@ -22,7 +23,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
         setRecords(data);
       }
     } catch (err) {
-      console.error('無法載入 AI 紀錄:', err);
+      console.error('Failed to load AI records:', err);
     } finally {
       setLoading(false);
     }
@@ -31,12 +32,12 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
   useEffect(() => {
     fetchAiRecords();
 
-    // 1. 建立 Socket 監聽
+    // 1. Initialize Socket.IO connection
     const socket = io(SOCKET_SERVER_URL);
 
-    // 2. 收到 AI Worker 即時推播時，刷新紀錄
+    // 2. Refresh records upon receiving real-time AI diagnosis events
     socket.on('ai_diagnosis_result', (data) => {
-      console.log('[React Gallery] 收到 AI 即時推播，刷新紀錄...', data);
+      console.log('[React Gallery] Real-time AI update received, refreshing records...', data);
       fetchAiRecords();
     });
 
@@ -48,17 +49,17 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
     };
   }, [deviceId]);
 
-  // 補回遺漏的 getImageUrl 函式
+  // Resolve full image URL with fallbacks for backend endpoints and MinIO S3 storage
   const getImageUrl = (item) => {
     if (!item) return 'https://via.placeholder.com/300x200?text=No+Data';
 
-    // 1. 優先使用全域完整的 HTTP 網址 (來自 Backend / Socket 拼好的完整路徑)
+    // 1. Prefer fully qualified HTTP URL (constructed by Backend or Socket)
     const fullUrl = item.processed_image_url || item.raw_image_url || item.image_url;
     if (fullUrl && fullUrl.startsWith('http')) {
       return fullUrl;
     }
 
-    // 2. 次要使用純檔名自動拼湊 MinIO 網址
+    // 2. Fallback to constructing URL with MinIO endpoint and bucket path
     const imgPath = item.processed_image_path || item.raw_image_path;
     if (imgPath) {
       if (imgPath.startsWith('http')) return imgPath;
@@ -68,7 +69,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
     return 'https://via.placeholder.com/300x200?text=No+Image';
   };
 
-  // 解析 Detections 陣列
+  // Safely parse JSON detections array
   const parseDetections = (detectionsData) => {
     if (!detectionsData) return [];
     if (typeof detectionsData === 'string') {
@@ -84,12 +85,12 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
   if (loading) {
     return (
       <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155', color: '#94a3b8', marginTop: '32px' }}>
-        載入 AI 診斷紀錄中...
+        Loading AI diagnostic records...
       </div>
     );
   }
 
-  // 強制切割僅取最新的前 3 筆紀錄
+  // Display only the latest 3 diagnostic records
   const displayRecords = records.slice(0, 3);
 
   return (
@@ -97,7 +98,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h3 style={{ margin: 0, fontSize: '18px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <Camera size={22} color="#38bdf8" />
-          🤖 AI 雙引擎多模態視覺與環境診斷 (ONNX & XGBoost)
+          Dual-Engine Multimodal Diagnostics
         </h3>
         <button 
           onClick={fetchAiRecords}
@@ -115,13 +116,13 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
             fontWeight: '500'
           }}
         >
-          <RefreshCw size={16} /> 重新整理
+          <RefreshCw size={16} /> Refresh
         </button>
       </div>
 
       {displayRecords.length === 0 ? (
         <div style={{ color: '#94a3b8', textAlign: 'center', padding: '40px 0' }}>
-          目前尚無 AI 分析影像紀錄，請按上方按鈕進行拍照診斷
+          No AI diagnostic records available. Trigger the camera to start analysis.
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
@@ -141,7 +142,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
                     alt="AI Diagnostic"
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                     onError={(e) => {
-                      console.error("圖片載入失敗:", imageUrl);
+                      console.error("Image load failed:", imageUrl);
                       e.target.src = 'https://via.placeholder.com/300x200?text=MinIO+Load+Error';
                     }}
                   />
@@ -162,15 +163,15 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
 
                 <div style={{ padding: '14px' }}>
                   <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
-                    <span>裝置: <span style={{ color: '#94a3b8' }}>{item.device_id || deviceId}</span></span>
+                    <span>Device: <span style={{ color: '#94a3b8' }}>{item.device_id || deviceId}</span></span>
                     {mainDetection.health_score && (
-                      <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>環境分數: {mainDetection.health_score}/5.0</span>
+                      <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>Env Score: {mainDetection.health_score}/5.0</span>
                     )}
                   </div>
 
                   <div style={{ fontSize: '14px', color: '#f8fafc' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '6px' }}>
-                      <span style={{ color: '#94a3b8', fontSize: '13px' }}>診斷結果：</span>
+                      <span style={{ color: '#94a3b8', fontSize: '13px' }}>Diagnosis:</span>
                       <span style={{ 
                         display: 'inline-flex',
                         alignItems: 'center',
@@ -190,7 +191,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
 
                     {mainDetection.action_required && mainDetection.action_required !== 'NORMAL' && (
                       <div style={{ marginTop: '8px', fontSize: '12px', color: '#fbbf24', backgroundColor: 'rgba(251, 191, 36, 0.1)', padding: '4px 8px', borderRadius: '4px', border: '1px dashed rgba(251, 191, 36, 0.3)' }}>
-                        🚨 建議觸發動作: <strong>{mainDetection.action_required}</strong>
+                        Recommended Action: <strong>{mainDetection.action_required}</strong>
                       </div>
                     )}
                   </div>

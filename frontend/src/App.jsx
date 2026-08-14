@@ -15,24 +15,24 @@ export default function App() {
   const [latestData, setLatestData] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   
-  // Day 6 控制與 Log 狀態
+  // Actuation control and log state
   const [actuationLogs, setActuationLogs] = useState([]);
   const [isWatering, setIsWatering] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [controlMessage, setControlMessage] = useState(null);
 
-  // 載入致動日誌
+  // Fetch recent actuation control logs
   const fetchControlLogs = async () => {
     try {
       const res = await axios.get(`${SOCKET_SERVER_URL}/api/control/logs`);
       setActuationLogs(res.data);
     } catch (err) {
-      console.error("無法載入控制日誌:", err);
+      console.error("Failed to load control logs:", err);
     }
   };
 
   useEffect(() => {
-    // 1. 抓取歷史數據與控制日誌
+    // Fetch initial telemetry history and actuation logs
     axios.get(`${SOCKET_SERVER_URL}/api/telemetry/recent?device_id=esp32_plant_01`)
       .then(res => {
         const formatted = res.data.map(d => ({
@@ -42,17 +42,17 @@ export default function App() {
         setTelemetryHistory(formatted);
         if (formatted.length > 0) setLatestData(formatted[formatted.length - 1]);
       })
-      .catch(err => console.error("無法抓取歷史數據:", err));
+      .catch(err => console.error("Failed to fetch historical telemetry data:", err));
 
     fetchControlLogs();
 
-    // 2. 建立 Socket.io 即時連線
+    // Establish real-time Socket.IO connection
     const socket = io(SOCKET_SERVER_URL);
 
     socket.on('connect', () => setIsConnected(true));
     socket.on('disconnect', () => setIsConnected(false));
 
-    // 監聽即時 Telemetry 數據
+    // Listen for real-time telemetry updates
     socket.on('telemetry_update', (data) => {
       const formattedItem = {
         ...data,
@@ -67,7 +67,7 @@ export default function App() {
       });
     });
 
-    // 監聽最新致動 Log
+    // Listen for incoming actuation logs
     socket.on('new_actuation_log', (log) => {
       setActuationLogs(prev => [log, ...prev.slice(0, 9)]);
     });
@@ -75,7 +75,7 @@ export default function App() {
     return () => socket.disconnect();
   }, []);
 
-  // 觸發遠端澆水
+  // Trigger remote watering command via MQTT downlink
   const handleWatering = async (durationSec = 3) => {
     setIsWatering(true);
     setControlMessage(null);
@@ -87,25 +87,25 @@ export default function App() {
       });
       setControlMessage({ type: 'success', text: res.data.message });
     } catch (err) {
-      const errorMsg = err.response?.data?.message || '澆水指令發送失敗';
+      const errorMsg = err.response?.data?.message || 'Failed to dispatch watering command.';
       setControlMessage({ type: 'error', text: errorMsg });
     } finally {
       setIsWatering(false);
     }
   };
 
-  // 觸發手動拍照診斷
+  // Trigger manual camera capture and AI diagnosis pipeline
   const handleCameraCapture = async () => {
     setIsCapturing(true);
     setControlMessage(null);
     try {
       const res = await axios.post(`${SOCKET_SERVER_URL}/api/camera/capture`);
       if (res.data.success) {
-        setControlMessage({ type: 'success', text: '📸 拍照指令已下達！ESP32-CAM 拍攝與 AI 分析中...' });
+        setControlMessage({ type: 'success', text: 'Capture command sent! ESP32-CAM capturing & AI processing...' });
       }
     } catch (err) {
-      console.error("❌ 拍照 API 呼叫失敗:", err);
-      const errorMsg = err.response?.data?.error || '拍照指令發送失敗';
+      console.error("Camera API execution failed:", err);
+      const errorMsg = err.response?.data?.error || 'Failed to dispatch camera capture command.';
       setControlMessage({ type: 'error', text: errorMsg });
     } finally {
       setIsCapturing(false);
@@ -114,11 +114,11 @@ export default function App() {
 
   return (
     <div style={{ padding: '24px', backgroundColor: '#0f172a', minHeight: '100vh', color: '#f8fafc', fontFamily: 'sans-serif' }}>
-      {/* 頁首 Header */}
+      {/* Header */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', borderBottom: '1px solid #334155', paddingBottom: '16px' }}>
         <div>
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', margin: '0 0 8px 0', color: '#38bdf8' }}>
-            🌱 AIoT 智慧植物時序監控平台
+            🌱 AIoT Smart Plant Monitoring Platform
           </h1>
           <p style={{ margin: 0, color: '#94a3b8', fontSize: '14px' }}>
             Device ID: <span style={{ color: '#f1f5f9', fontWeight: '600' }}>esp32_plant_01</span>
@@ -128,16 +128,16 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#1e293b', padding: '8px 16px', borderRadius: '20px' }}>
           <Activity size={18} color={isConnected ? '#22c55e' : '#ef4444'} />
           <span style={{ fontSize: '14px', color: isConnected ? '#22c55e' : '#ef4444', fontWeight: '600' }}>
-            {isConnected ? '即時串流中 (Live)' : '離線 (Offline)'}
+            {isConnected ? 'Live Streaming' : 'Offline'}
           </span>
         </div>
       </header>
 
-      {/* 4 大即時指標卡片 */}
+      {/* 4 Core Real-Time Metric Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#38bdf8', marginBottom: '8px' }}>
-            <span style={{ fontSize: '14px', color: '#94a3b8' }}>土壤濕度</span>
+            <span style={{ fontSize: '14px', color: '#94a3b8' }}>Soil Moisture</span>
             <Droplets size={20} />
           </div>
           <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#f8fafc' }}>
@@ -147,7 +147,7 @@ export default function App() {
 
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#f43f5e', marginBottom: '8px' }}>
-            <span style={{ fontSize: '14px', color: '#94a3b8' }}>環境溫度</span>
+            <span style={{ fontSize: '14px', color: '#94a3b8' }}>Temperature</span>
             <Thermometer size={20} />
           </div>
           <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#f8fafc' }}>
@@ -157,7 +157,7 @@ export default function App() {
 
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#eab308', marginBottom: '8px' }}>
-            <span style={{ fontSize: '14px', color: '#94a3b8' }}>光照強度</span>
+            <span style={{ fontSize: '14px', color: '#94a3b8' }}>Light Intensity</span>
             <Sun size={20} />
           </div>
           <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#f8fafc' }}>
@@ -167,7 +167,7 @@ export default function App() {
 
         <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#a855f7', marginBottom: '8px' }}>
-            <span style={{ fontSize: '14px', color: '#94a3b8' }}>水箱水量</span>
+            <span style={{ fontSize: '14px', color: '#94a3b8' }}>Water Level</span>
             <Gauge size={20} />
           </div>
           <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#f8fafc' }}>
@@ -176,15 +176,15 @@ export default function App() {
         </div>
       </div>
 
-      {/* 遠端致動控制與紀錄區域 */}
+      {/* Remote Control & Actuation Logs Section */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', marginBottom: '32px' }}>
-        {/* 控制卡片 */}
+        {/* Actuation Control Card */}
         <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Droplets color="#38bdf8" size={20} /> 遠端致動控制 (MQTT Downlink)
+            <Droplets color="#38bdf8" size={20} /> Remote Actuation Control (MQTT Downlink)
           </h3>
           <p style={{ fontSize: '14px', color: '#94a3b8', marginBottom: '20px' }}>
-            可手動下達澆水指令至 ESP32 裝置或驅動 ESP32-CAM 手動拍照 AI 診斷。
+            Manually trigger irrigation commands or capture camera snapshots for AI diagnostics.
           </p>
 
           <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
@@ -207,7 +207,7 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Play size={16} /> 澆水 3 秒
+              <Play size={16} /> Water 3s
             </button>
             <button
               onClick={() => handleWatering(5)}
@@ -228,7 +228,7 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Play size={16} /> 澆水 5 秒
+              <Play size={16} /> Water 5s
             </button>
             <button
               onClick={handleCameraCapture}
@@ -249,7 +249,7 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Camera size={16} /> 拍照 AI 診斷
+              <Camera size={16} /> Snapshot & AI
             </button>
           </div>
 
@@ -271,19 +271,19 @@ export default function App() {
           )}
         </div>
 
-        {/* 控制日誌 Log 面板 */}
+        {/* Actuation Logs Card */}
         <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', color: '#f8fafc' }}>
-            📋 致動歷史紀錄 (Actuation Logs)
+            📋 Actuation Logs
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
             {actuationLogs.length === 0 ? (
-              <div style={{ color: '#64748b', fontSize: '14px' }}>目前尚無致動紀錄</div>
+              <div style={{ color: '#64748b', fontSize: '14px' }}>No actuation logs recorded yet.</div>
             ) : (
               actuationLogs.map((log, idx) => (
                 <div key={idx} style={{
                   display: 'flex',
-                  justify: 'space-between',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   padding: '8px 12px',
                   backgroundColor: '#0f172a',
@@ -317,26 +317,26 @@ export default function App() {
         </div>
       </div>
 
-      {/* 時序趨勢圖表 */}
+      {/* Real-Time Telemetry Trend Chart */}
       <div style={{ backgroundColor: '#1e293b', padding: '24px', borderRadius: '12px', border: '1px solid #334155' }}>
-        <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', color: '#f8fafc' }}>📈 即時土壤與溫度變化趨勢 (TimescaleDB Real-time Stream)</h3>
+        <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', color: '#f8fafc' }}>📈 Real-Time Soil & Temperature Telemetry (TimescaleDB Stream)</h3>
         <div style={{ width: '100%', height: '350px' }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={telemetryHistory}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
               <XAxis dataKey="formattedTime" stroke="#94a3b8" />
-              <YAxis yAxisId="left" stroke="#38bdf8" domain={[0, 100]} label={{ value: '濕度 (%)', angle: -90, position: 'insideLeft', fill: '#38bdf8' }} />
-              <YAxis yAxisId="right" orientation="right" stroke="#f43f5e" domain={[0, 50]} label={{ value: '溫度 (°C)', angle: 90, position: 'insideRight', fill: '#f43f5e' }} />
+              <YAxis yAxisId="left" stroke="#38bdf8" domain={[0, 100]} label={{ value: 'Moisture (%)', angle: -90, position: 'insideLeft', fill: '#38bdf8' }} />
+              <YAxis yAxisId="right" orientation="right" stroke="#f43f5e" domain={[0, 50]} label={{ value: 'Temperature (°C)', angle: 90, position: 'insideRight', fill: '#f43f5e' }} />
               <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' }} />
               <Legend />
-              <Line yAxisId="left" type="monotone" dataKey="soil_moisture" name="土壤濕度 (%)" stroke="#38bdf8" strokeWidth={3} dot={false} isAnimationActive={false} />
-              <Line yAxisId="right" type="monotone" dataKey="temperature" name="環境溫度 (°C)" stroke="#f43f5e" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line yAxisId="left" type="monotone" dataKey="soil_moisture" name="Soil Moisture (%)" stroke="#38bdf8" strokeWidth={3} dot={false} isAnimationActive={false} />
+              <Line yAxisId="right" type="monotone" dataKey="temperature" name="Temperature (°C)" stroke="#f43f5e" strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* AI 診斷畫廊 */}
+      {/* AI Diagnostic Gallery */}
       <AiVisionGallery deviceId="esp32_plant_01" />
     </div>
   );
