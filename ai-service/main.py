@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,43 +9,51 @@ from pydantic import BaseModel
 from engine import PlantAIEngine
 from worker import PlantAIWorker
 
-# 全域 Worker 實例與停止 Flag 控制
 worker_instance = None
 is_running = True
 
 def run_worker_loop():
     """在獨立線程中運行的 Redis 佇列監聽迴圈"""
     global worker_instance, is_running
-    worker_instance = PlantAIWorker()
-    print("🚀 [FastAPI Lifespan] 背景 Redis Worker 佇列監聽已啟動...")
+    print("🚀 [FastAPI Startup] 正在背景啟動 Redis AI Worker...", flush=True)
     
+    # 延遲 2 秒等待外部服務準備完畢並實例化
+    time.sleep(2)
+    try:
+        worker_instance = PlantAIWorker()
+        print("✅ [FastAPI Lifespan] 背景 Redis Worker 初始化完畢，開始監聽佇列...", flush=True)
+    except Exception as init_err:
+        print(f"❌ [FastAPI Lifespan] Worker 初始化失敗: {init_err}", flush=True)
+        return
+
     while is_running:
         try:
-            # 5 秒 timeout，確保服務關閉時能及時退出迴圈
-            task = worker_instance.redis_client.blpop(['bull:aiVisionQueue:wait', 'bull:aiQueue:wait'], timeout=5)
+            # 監聽 Redis 佇列
+            task = worker_instance.redis_client.blpop(['bull:aiVisionQueue:wait', 'aiVisionQueue', 'bull:aiQueue:wait'], timeout=2)
             if task and len(task) > 1 and task[1] is not None:
                 job_raw = task[1].decode('utf-8')
+                print(f"📥 [FastAPI Worker] 收到背景佇列任務: {job_raw}", flush=True)
                 worker_instance.process_task(job_raw)
         except Exception as e:
-            if "Timeout reading from socket" not in str(e):
-                print(f"⚠️ 背景 Worker 監聽例外: {str(e)}")
+            if "Timeout reading from socket" not in str(e) and "timed out" not in str(e):
+                print(f"⚠️ 背景 Worker 監聽例外: {str(e)}", flush=True)
+        time.sleep(0.1)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI 生命週期管理：服務啟動時帶起 Worker，關閉時平順釋放資源"""
+    """FastAPI 生命週期管理"""
     global is_running
     is_running = True
     
     # 啟動背景 Worker Thread
     worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
     worker_thread.start()
-    print("✅ [FastAPI] 整合型微服務啟動完成（已含 REST API 與 Redis 佇列監聽器）")
+    print("✅ [FastAPI] 整合型微服務啟動完成（含 REST API 與 Redis 佇列監聽器）", flush=True)
     
     yield
     
-    # 服務關閉時停止 Worker
     is_running = False
-    print("🛑 [FastAPI] 正關閉背景 Redis Worker...")
+    print("🛑 [FastAPI] 正關閉背景 Redis Worker...", flush=True)
 
 app = FastAPI(
     title="AIoT Plant Diagnosis REST API & Worker", 
@@ -60,12 +69,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 在服務啟動時初始化單例 (Singleton) AI 引擎
+# 啟動單例 AI 引擎
 ai_engine = PlantAIEngine()
 
 class DiagnosisResponse(BaseModel):
     diagnosis: str
-    confidence_percent: float
     health_score: float
     action_required: str
 
@@ -88,7 +96,6 @@ async def predict(
         res = ai_engine.predict(contents, soil_moisture, temperature, humidity)
         return DiagnosisResponse(
             diagnosis=res["diagnosis"],
-            confidence_percent=round(res["confidence"] * 100, 2),
             health_score=res["health_score"],
             action_required=res["action_required"]
         )
