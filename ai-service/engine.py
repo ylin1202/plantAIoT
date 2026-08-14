@@ -81,25 +81,25 @@ class PlantAIEngine:
                 input_name = self.ort_session.get_inputs()[0].name
                 raw_output = self.ort_session.run(None, {input_name: input_data})[0]
 
+                # 直接取 Logits 最大值的 Index
                 logits = raw_output.flatten()
-                exp_logits = np.exp(logits - np.max(logits))
-                probs = exp_logits / np.sum(exp_logits)
+                top1_idx = int(np.argmax(logits))
 
-                top1_idx = int(np.argmax(probs))
-
-                print(f"🔥 [ONNX 推論成功] 機率分佈: {np.round(probs, 4)} | 預測 Index: {top1_idx}")
-
+                # 先決定診斷標籤
                 if top1_idx < len(self.CLASS_NAMES):
                     diagnosis_label = self.CLASS_NAMES[top1_idx]
                 else:
                     diagnosis_label = "Healthy"
 
+                # 🎯 乾淨印出視覺診斷結果 (不含任何機率與信心度)
+                print(f"🔥 [ONNX 視覺診斷] 預測類別: {diagnosis_label}", flush=True)
+
             except Exception as e:
-                print(f"❌ [PlantAIEngine Exception] ONNX 推論失敗，錯誤訊息: {e}")
+                print(f"❌ [PlantAIEngine Exception] ONNX 推論失敗，錯誤訊息: {e}", flush=True)
                 diagnosis_label = "Uncertain"
         else:
-            print("🚨 [PlantAIEngine Warning] ort_session 為 None！請檢查 best.onnx 是否存在於工作目錄！")
-
+            print("🚨 [PlantAIEngine Warning] ort_session 為 None！請檢查 best.onnx 是否存在於工作目錄！", flush=True)
+            
         # 2. XGBoost 環境數據評估
         health_score = 3.5
         if self.xgb_model:
