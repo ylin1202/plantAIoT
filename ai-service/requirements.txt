@@ -1,0 +1,15 @@
+redis
+psycopg2-binary
+requests
+python-dotenv
+minio
+Pillow
+onnxruntime
+xgboost
+joblib
+numpy
+pandas
+opencv-python-headless
+fastapi
+uvicorn
+python-multipart
