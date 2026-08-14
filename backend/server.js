@@ -7,15 +7,15 @@ const cors = require('cors');
 const Redis = require('ioredis');
 require('dotenv').config();
 
-// 引入 BullMQ 佇列模組
+// Import BullMQ queue modules
 const { telemetryQueue, initTelemetryWorker } = require('./queue');
 
-// Telegram
+// Import Telegram bot notifications
 const { checkAndTriggerAlert, initBotPolling } = require('./telegram');
 
 const app = express();
 
-// CORS 設定
+// CORS configuration
 app.use(cors({ origin: true, credentials: true }));
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -33,7 +33,7 @@ const io = new Server(server, {
   allowEIO3: true
 });
 
-// 建立 Redis Pub/Sub 監聽器，並補全傳給前端的完整圖片 URL
+// Setup Redis Pub/Sub subscriber and resolve MinIO URLs for real-time frontend delivery
 const redisSub = new Redis({
   host: process.env.REDIS_HOST || 'redis',
   port: parseInt(process.env.REDIS_PORT || '6379'),
@@ -41,9 +41,9 @@ const redisSub = new Redis({
 
 redisSub.subscribe('ai_diagnosis_channel', (err, count) => {
   if (err) {
-    console.error('[Redis Sub] 訂閱 ai_diagnosis_channel 失敗:', err.message);
+    console.error('[Redis Sub] Failed to subscribe to ai_diagnosis_channel:', err.message);
   } else {
-    console.log('[Redis Sub] 成功訂閱 ai_diagnosis_channel，準備接收 AI 診斷推播！');
+    console.log('[Redis Sub] Subscribed to ai_diagnosis_channel successfully. Ready to broadcast AI diagnosis events.');
   }
 });
 
@@ -55,7 +55,7 @@ redisSub.on('message', (channel, message) => {
       const minioBaseUrl = process.env.MINIO_PUBLIC_URL || 'http://localhost:9000/plant-images';
       const imgName = diagnosisData.image_name || '';
 
-      // 為 Socket 廣播自動補上前端 (React) 渲染所需的全域圖片網址與格式
+      // Format payload and construct fully qualified image URLs for React dashboard consumption
       const formattedData = {
         time: diagnosisData.timestamp || new Date().toISOString(),
         device_id: diagnosisData.device_id || 'esp32_plant_01',
@@ -64,23 +64,22 @@ redisSub.on('message', (channel, message) => {
         image_url: `${minioBaseUrl}/${imgName}`,
         detections: [{
           diagnosis: diagnosisData.diagnosis,
-          confidence: diagnosisData.confidence,
           health_score: diagnosisData.health_score,
           action_required: diagnosisData.action_required
         }]
       };
 
-      console.log('[Backend] 收到 AI 診斷結果，成功格式化並推播給 React:', formattedData);
+      console.log('[Backend] AI diagnosis received, formatted and broadcasted to React client:', formattedData);
 
-      // 即時廣播給 React 前端
+      // Real-time broadcast via Socket.IO
       io.emit('ai_diagnosis_result', formattedData);
     } catch (err) {
-      console.error('[Redis Sub] 解析 AI 診斷結果失敗:', err.message);
+      console.error('[Redis Sub] Failed to parse AI diagnosis payload:', err.message);
     }
   }
 });
 
-// TimescaleDB 連線池
+// TimescaleDB Connection Pool
 const dbPool = new Pool({
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5433'),
@@ -89,12 +88,12 @@ const dbPool = new Pool({
   database: process.env.DB_NAME || 'aiot_db',
 });
 
-// 初始化 DB 並自動建立 actuation_logs 表
+// Initialize database connection and auto-migrate actuation_logs schema
 dbPool.connect(async (err, client, release) => {
   if (err) {
-    console.error('DB 連線失敗:', err.stack);
+    console.error('[DB] Connection failed:', err.stack);
   } else {
-    console.log('TimescaleDB 連線成功！');
+    console.log('[DB] Connected to TimescaleDB successfully.');
     try {
       await client.query(`
         CREATE TABLE IF NOT EXISTS actuation_logs (
@@ -106,24 +105,24 @@ dbPool.connect(async (err, client, release) => {
           created_at TIMESTAMPTZ DEFAULT NOW()
         );
       `);
-      console.log('檢查/建立 actuation_logs 資料表完成！');
+      console.log('[DB] Verified and initialized actuation_logs table schema.');
     } catch (tableErr) {
-      console.error('自動建表失敗:', tableErr.message);
+      console.error('[DB] Auto-migration failed:', tableErr.message);
     } finally {
       release();
     }
   }
 });
 
-// MQTT Client 連線
+// MQTT Client Connection
 const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883');
 
 mqttClient.on('connect', () => {
-  console.log('成功連接 EMQX MQTT Broker！');
+  console.log('[MQTT] Connected to EMQX Broker successfully.');
   mqttClient.subscribe('tenants/+/devices/+/telemetry');
 });
 
-// MQTT 收到 telemetry 訊息：Push 進 BullMQ 佇列
+// Push incoming telemetry messages to BullMQ queue for async processing
 mqttClient.on('message', async (topic, message) => {
   try {
     const payload = JSON.parse(message.toString());
@@ -137,14 +136,14 @@ mqttClient.on('message', async (topic, message) => {
     checkAndTriggerAlert(payload);
 
   } catch (err) {
-    console.error('處理 MQTT 訊息失敗:', err.message);
+    console.error('[MQTT] Failed to process telemetry message:', err.message);
   }
 });
 
 // ==================== REST APIs ====================
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Backend Server is running!' });
+  res.json({ status: 'ok', message: 'Backend Server is running.' });
 });
 
 // 1. GET /api/telemetry/recent
@@ -187,7 +186,7 @@ app.get('/api/telemetry/history', async (req, res) => {
     const dbRes = await dbPool.query(query, [device_id]);
     res.json({ success: true, data: dbRes.rows });
   } catch (err) {
-    console.error('撈取歷史數據失敗:', err.message);
+    console.error('[API] Failed to fetch historical telemetry data:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -197,7 +196,7 @@ app.get('/api/ai/recent', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit || '10');
 
-    // 查詢最新紀錄 (不加嚴格的 WHERE，相容不同裝置 ID)
+    // Query latest records with cross-device compatibility
     const query = `
       SELECT time, device_id, raw_image_path, processed_image_path, detections
       FROM ai_image_analyses
@@ -218,17 +217,17 @@ app.get('/api/ai/recent', async (req, res) => {
 
     res.json(formattedRows);
   } catch (err) {
-    console.error('撈取 AI 紀錄失敗:', err.message);
+    console.error('[API] Failed to fetch recent AI records:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 4. POST /api/control/water - 手動遠端澆水 API
+// 4. POST /api/control/water - Manual remote watering control
 app.post('/api/control/water', async (req, res) => {
   const { device_id = 'esp32_plant_01', tenant_id = 'demo_tenant', duration_sec = 3 } = req.body;
 
   try {
-    // 1. 後端防乾燒檢查：撈取該裝置最新一筆水位 (使用 dbPool)
+    // 1. Dry-run prevention: verify water level before actuation
     const checkRes = await dbPool.query(
       `SELECT water_level FROM sensor_telemetry WHERE device_id = $1 ORDER BY time DESC LIMIT 1`,
       [device_id]
@@ -244,11 +243,11 @@ app.post('/api/control/water', async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message: '警告：水箱水位過低 (<=5%)，系統阻止啟動抽水泵以防乾燒！'
+        message: 'Warning: Water reservoir level is critically low (<= 5%). Actuation aborted to prevent pump dry-run damage.'
       });
     }
 
-    // 2. 組成多租戶 Topic 並發送 MQTT 下行控制指令 (Downlink)
+    // 2. Publish MQTT downlink command across multi-tenant topic
     const controlTopic = `tenants/${tenant_id}/devices/${device_id}/control`;
     const commandPayload = JSON.stringify({
       action: 'PUMP_ON',
@@ -258,26 +257,26 @@ app.post('/api/control/water', async (req, res) => {
 
     mqttClient.publish(controlTopic, commandPayload);
 
-    // 3. 寫入成功日誌至 TimescaleDB
+    // 3. Persist execution log into TimescaleDB
     const logRes = await dbPool.query(
       `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) 
        VALUES ($1, $2, $3, $4) RETURNING *`,
       [device_id, 'MANUAL_WATER', duration_sec, 'SUCCESS']
     );
 
-    // 4. WebSocket 即時推播日誌給前端
+    // 4. Broadcast updated actuation log via Socket.IO
     io.emit('new_actuation_log', logRes.rows[0]);
 
-    console.log(`[控制中心] 已對 ${controlTopic} 發送澆水指令 (${duration_sec}s)`);
-    res.json({ success: true, message: '澆水指令已下達！', log: logRes.rows[0] });
+    console.log(`[Control Center] Dispatched watering command to ${controlTopic} (${duration_sec}s)`);
+    res.json({ success: true, message: 'Watering command dispatched successfully.', log: logRes.rows[0] });
 
   } catch (err) {
-    console.error('控制 API 異常:', err.message);
-    res.status(500).json({ error: '內部伺服器錯誤', details: err.message });
+    console.error('[API Error] Remote watering control failed:', err.message);
+    res.status(500).json({ error: 'Internal Server Error', details: err.message });
   }
 });
 
-// 5. POST /api/camera/capture - Web 觸發手動拍照診斷 API
+// 5. POST /api/camera/capture - Web-triggered manual camera capture and AI diagnosis
 app.post('/api/camera/capture', async (req, res) => {
   try {
     const cameraTopic = `tenants/demo_tenant/devices/esp32_plant_01/control`;
@@ -292,10 +291,10 @@ app.post('/api/camera/capture', async (req, res) => {
       ['esp32_plant_01', 'WEB_CAPTURE', 0, 'SUCCESS']
     );
 
-    console.log(`[控制中心] 已成功對 ${cameraTopic} 發送拍照指令`);
+    console.log(`[Control Center] Dispatched snapshot capture command to ${cameraTopic}`);
     res.json({ success: true, message: 'Camera capture triggered successfully.' });
   } catch (err) {
-    console.error('觸發拍照 API 失敗:', err.message);
+    console.error('[API Error] Failed to trigger camera capture:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -308,12 +307,12 @@ app.get('/api/control/logs', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('讀取控制日誌失敗:', err.message);
+    console.error('[API Error] Failed to fetch actuation logs:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== AI 診斷紀錄查詢 API ====================
+// ==================== AI Analysis Query API ====================
 app.get('/api/ai-analyses', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 6;
@@ -342,25 +341,25 @@ app.get('/api/ai-analyses', async (req, res) => {
 
     res.json(formattedRows);
   } catch (err) {
-    console.error("抓取 AI 分析紀錄失敗:", err);
-    res.status(500).json({ error: "無法讀取 AI 診斷紀錄" });
+    console.error("[API Error] Failed to query AI analyses:", err);
+    res.status(500).json({ error: "Failed to retrieve AI diagnostic records." });
   }
 });
 
-// 相容舊版 API 路徑
+// Backward compatible endpoint redirect
 app.get('/api/ai/recent-redirect', async (req, res) => {
   const limit = req.query.limit || 6;
   res.redirect(`/api/ai-analyses?limit=${limit}`);
 });
 
-// ==================== Socket.io 連線 ====================
+// ==================== Socket.IO Lifecycle ====================
 io.on('connection', (socket) => {
-  console.log(`Web 儀表板已連線: ${socket.id}`);
+  console.log(`[Socket.IO] Web dashboard connected: ${socket.id}`);
 });
 
 const PORT = process.env.PORT || 5002;
 server.listen(PORT, () => {
-  console.log(`後端伺服器已啟動於 ${PORT}`);
+  console.log(`[Server] Node.js backend running on port ${PORT}`);
 
   initBotPolling(dbPool, mqttClient);
   initTelemetryWorker(dbPool, io, mqttClient);

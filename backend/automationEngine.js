@@ -1,48 +1,48 @@
 const { checkAndTriggerAlert, sendTelegramMessage } = require('./telegram');
 
-// 紀錄上次自動澆水時間（防洗版與防過度澆水冷卻，預設 5 分鐘）
+// Track timestamp of last auto-watering event (prevents over-watering and alert spam; default: 5 minutes)
 let lastAutoWaterTime = 0;
 const AUTO_WATER_COOLDOWN_MS = 5 * 60 * 1000; 
 
 /**
- * 自動化規則檢查器
- * @param {Object} telemetry - 感測器上報數據
- * @param {Object} dbPool - PostgreSQL / TimescaleDB 連線池
- * @param {Object} mqttClient - MQTT 戶端
+ * Automated rule engine evaluator.
+ * @param {Object} telemetry - Sensor telemetry payload.
+ * @param {Object} dbPool - PostgreSQL / TimescaleDB connection pool.
+ * @param {Object} mqttClient - MQTT client instance.
  */
 async function processAutomationRules(telemetry, dbPool, mqttClient) {
   const { soil_moisture, water_level, device_id } = telemetry;
   const tenant_id = 'demo_tenant';
   const now = Date.now();
 
-  // 先進行基礎告警推播檢查（傳送至 telegram.js）
+  // Evaluate baseline anomaly alerts and dispatch via telegram.js
   checkAndTriggerAlert(telemetry);
 
   // -------------------------------------------------------------
-  // 規則 1: 土壤自動補水 (Auto-Watering Rule)
+  // Rule 1: Automated Soil Rehydration (Auto-Watering Rule)
   // -------------------------------------------------------------
   if (soil_moisture < 20.0) {
-    // 檢查冷卻時間
+    // Check cooldown window
     if (now - lastAutoWaterTime < AUTO_WATER_COOLDOWN_MS) {
-      console.log(`⏱️ [規則引擎] 土壤濕度 ${soil_moisture}% 低於門檻，但處於冷卻期內，暫不重複觸發。`);
+      console.log(`[Rule Engine] Soil moisture (${soil_moisture}%) is below threshold, but rule is within cooldown window. Skipping.`);
       return;
     }
 
-    // 檢查硬體級水箱防乾燒
+    // Evaluate hardware-level dry-run prevention interlock
     if (water_level <= 5.0) {
-      console.warn(`⚠️ [規則引擎] 觸發自動澆水條件，但水箱水位僅 ${water_level}% (<=5%)，執行防乾燒鎖定！`);
+      console.warn(`[Rule Engine] Auto-watering conditions met, but water reservoir is low (${water_level}% <= 5%). Dry-run interlock engaged.`);
       
-      // 寫入拒絕 Log
+      // Persist rejection log into TimescaleDB
       await dbPool.query(
         `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) VALUES ($1, $2, $3, $4)`,
         [device_id, 'AUTO_RULE_WATER', 3, 'REJECTED_LOW_WATER']
       );
 
-      sendTelegramMessage(`🚫 *【自動澆水被鎖定】*\n檢測到土壤過乾 (${soil_moisture}%)，但水箱水位僅 *${water_level}%*，系統已安全鎖定抽水泵防乾燒！請補充水箱。`);
+      sendTelegramMessage(`🚫 *【Auto-Watering Locked】*\nLow soil moisture detected (*${soil_moisture}%*), but water reservoir level is critically low (*${water_level}%*). The pump has been locked to prevent dry-running damage. Please refill the reservoir.`);
       return;
     }
 
-    // 觸發自動澆水
+    // Trigger automated watering actuation
     lastAutoWaterTime = now;
     const duration_sec = 3;
     const controlTopic = `tenants/${tenant_id}/devices/${device_id}/control`;
@@ -53,28 +53,28 @@ async function processAutomationRules(telemetry, dbPool, mqttClient) {
       timestamp: new Date().toISOString()
     });
 
-    // 1. 發送 MQTT 下行控制指令
+    // 1. Publish MQTT downlink control command
     mqttClient.publish(controlTopic, payload);
-    console.log(`🤖 [自動化規則引擎] 檢測到土壤濕度 ${soil_moisture}% < 20%，已自動下發 PUMP_ON 指令 (${duration_sec}s)！`);
+    console.log(`[Automation Engine] Low soil moisture detected (${soil_moisture}% < 20%). Dispatched PUMP_ON command (${duration_sec}s).`);
 
-    // 2. 紀錄至資料庫 Actuation Logs
+    // 2. Persist execution record into actuation_logs
     try {
       await dbPool.query(
         `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) VALUES ($1, $2, $3, $4)`,
         [device_id, 'AUTO_RULE_WATER', duration_sec, 'SUCCESS']
       );
     } catch (err) {
-      console.error('❌ 寫入致動日誌失敗:', err.message);
+      console.error('[Database Error] Failed to persist actuation log:', err.message);
     }
 
-    // 3. 推送 Telegram 通報
+    // 3. Dispatch alert notification via Telegram
     sendTelegramMessage(
-      `🤖 *【自動化規則觸發：自動補水】*\n` +
+      `🤖 *【Automation Triggered: Auto-Watering】*\n` +
       `───────────────────\n` +
-      `📡 裝置: \`${device_id}\`\n` +
-      `💧 當前土壤濕度: *${soil_moisture}%* (低於門檻 20%)\n` +
-      `🚰 當前水箱水位: *${water_level}%*\n` +
-      `⚡ 動作: 系統已自動啟動抽水泵運轉 *${duration_sec} 秒*！`
+      `📡 Device: \`${device_id}\`\n` +
+      `💧 Current Soil Moisture: *${soil_moisture}%* (Threshold: < 20%)\n` +
+      `🚰 Water Reservoir Level: *${water_level}%*\n` +
+      `⚡ Action: Water pump activated for *${duration_sec} seconds*.`
     );
   }
 }

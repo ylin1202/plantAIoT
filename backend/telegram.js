@@ -5,16 +5,16 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 if (!BOT_TOKEN || !CHAT_ID) {
-    console.warn('⚠️ 未設定 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，Telegram 功能將受限。');
+    console.warn('TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing. Telegram functionality will be disabled.');
 }
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// 紀錄告警冷卻時間（避免重複發送訊息洗版）
+// Alert cooldown tracking to prevent notification spamming
 let lastAlertTime = 0;
-const ALERT_COOLDOWN_MS = 60000; // 冷卻時間：1 分鐘
+const ALERT_COOLDOWN_MS = 60000; // Cooldown duration: 1 minute
 
-// 1. 發送文字訊息
+// 1. Dispatch text messages
 async function sendTelegramMessage(text) {
     if (!BOT_TOKEN || !CHAT_ID) return;
     try {
@@ -24,11 +24,11 @@ async function sendTelegramMessage(text) {
             parse_mode: 'Markdown'
         });
     } catch (err) {
-        console.error('❌ 發送 Telegram 訊息失敗:', err.response?.data?.description || err.message);
+        console.error('Failed to dispatch Telegram message:', err.response?.data?.description || err.message);
     }
 }
 
-// 2. 發送圖片訊息 (用於 AI 診斷圖文推播)
+// 2. Dispatch photo messages (for multimodal AI diagnosis notifications)
 async function sendTelegramPhoto(photoUrl, caption) {
     if (!BOT_TOKEN || !CHAT_ID) return;
     try {
@@ -39,11 +39,11 @@ async function sendTelegramPhoto(photoUrl, caption) {
             parse_mode: 'Markdown'
         });
     } catch (err) {
-        console.error('❌ 發送 Telegram 照片失敗:', err.response?.data?.description || err.message);
+        console.error('Failed to dispatch Telegram photo:', err.response?.data?.description || err.message);
     }
 }
 
-// 3. 自動向 Telegram 註冊官方選單按鈕 (Set My Commands)
+// 3. Register official command shortcuts with Telegram (Set My Commands)
 async function registerBotCommands() {
     if (!BOT_TOKEN) return;
     try {
@@ -54,13 +54,13 @@ async function registerBotCommands() {
                 { command: 'photo', description: 'Trigger ESP32-CAM to take a photo & AI analysis' }
             ]
         });
-        console.log('✅ [Telegram Bot] 已成功註冊官方英文選單指令 (/status, /water, /photo)！');
+        console.log('[Telegram Bot] Bot command shortcuts registered successfully (/status, /water, /photo).');
     } catch (err) {
-        console.error('❌ 註冊 Telegram 選單失敗:', err.message);
+        console.error('Failed to register bot commands:', err.message);
     }
 }
 
-// 4. 檢查數據並觸發異常告警
+// 4. Evaluate telemetry thresholds and trigger automated anomaly alerts
 function checkAndTriggerAlert(telemetry) {
     const now = Date.now();
     if (now - lastAlertTime < ALERT_COOLDOWN_MS) return;
@@ -69,30 +69,30 @@ function checkAndTriggerAlert(telemetry) {
     let alertMessages = [];
 
     if (soil_moisture < 20.0) {
-        alertMessages.push(`🌵 *🚨 Low Soil Moisture Alert!*\nDevice: \`${device_id}\`\nCurrent moisture: *${soil_moisture}%* (Threshold: 20%)`);
+        alertMessages.push(`*Low Soil Moisture Alert!*\nDevice: \`${device_id}\`\nCurrent moisture: *${soil_moisture}%* (Threshold: 20%)`);
     }
 
     if (water_level < 5.0) {
-        alertMessages.push(`⚠️ *🚨 Low Water Tank Alert!*\nDevice: \`${device_id}\`\nWater level: *${water_level}%*. Refill to prevent dry running!`);
+        alertMessages.push(`*Low Water Tank Alert!*\nDevice: \`${device_id}\`\nWater level: *${water_level}%*. Refill to prevent dry running!`);
     }
 
     if (alertMessages.length > 0) {
         lastAlertTime = now;
-        const fullText = alertMessages.join('\n\n') + '\n\n💡 Tip: Tap `/water` to trigger remote watering.';
+        const fullText = alertMessages.join('\n\n') + '\n\n Tip: Tap `/water` to trigger remote watering.';
         sendTelegramMessage(fullText);
-        console.log(`📱 [Telegram Bot] 已發送異常告警至手機！`);
+        console.log(`📱 [Telegram Bot] Anomaly alert dispatched to subscriber.`);
     }
 }
 
-// 5. Telegram Bot Long Polling 指令對話監聽
+// 5. Telegram Bot long-polling command listener
 let lastUpdateId = 0;
 function initBotPolling(dbPool, mqttClient) {
     if (!BOT_TOKEN) return;
 
-    // 啟動時自動幫你向 Telegram 註冊選單按鈕
+    // Automatically register command menu on initialization
     registerBotCommands();
 
-    console.log('🤖 [Telegram Bot] 啟動指令對話監聽器 (/status, /water, /photo)...');
+    console.log('[Telegram Bot] Initializing long-polling command listener (/status, /water, /photo)...');
 
     setInterval(async () => {
         try {
@@ -106,14 +106,14 @@ function initBotPolling(dbPool, mqttClient) {
                 const msg = update.message;
                 if (!msg || !msg.text) continue;
 
-                // 彈性解析指令：先拿第一個單詞，去除 @bot_name，再統一轉小寫
+                // Normalize incoming command: isolate first token, strip bot tag, convert to lowercase
                 const rawText = msg.text.trim();
-                const firstWord = rawText.split(' ')[0]; // 避免後續參數干擾
+                const firstWord = rawText.split(' ')[0];
                 const command = firstWord.split('@')[0].toLowerCase();
 
-                console.log(`📩 [Telegram 指令收到]: "${rawText}" -> 解析為: "${command}"`);
+                console.log(`[Telegram Command Received]: "${rawText}" -> Parsed as: "${command}"`);
 
-                // 指令 1: /status - 查詢最新狀態
+                // Command 1: /status - Fetch latest telemetry
                 if (command === '/status') {
                     const dbRes = await dbPool.query(
                         `SELECT * FROM sensor_telemetry WHERE device_id = 'esp32_plant_01' ORDER BY time DESC LIMIT 1`
@@ -130,10 +130,10 @@ function initBotPolling(dbPool, mqttClient) {
                             `💡 Type or tap \`/water\` to trigger remote watering, or \`/photo\` for AI diagnosis.`;
                         await sendTelegramMessage(reply);
                     } else {
-                        await sendTelegramMessage('❌ No sensor telemetry data available.');
+                        await sendTelegramMessage('No sensor telemetry data available.');
                     }
                 }
-                // 指令 2: /water - 發送遠端澆水
+                // Command 2: /water - Trigger remote pump actuation
                 else if (command === '/water') {
                     const dbRes = await dbPool.query(
                         `SELECT water_level FROM sensor_telemetry WHERE device_id = 'esp32_plant_01' ORDER BY time DESC LIMIT 1`
@@ -141,7 +141,7 @@ function initBotPolling(dbPool, mqttClient) {
                     const waterLevel = dbRes.rows[0]?.water_level ?? 100;
 
                     if (waterLevel <= 5) {
-                        await sendTelegramMessage('🚫 *Water Tank Low (<=5%)*! Action rejected to prevent dry running.');
+                        await sendTelegramMessage('*Water Tank Low (<=5%)*! Action rejected to prevent dry running.');
                     } else {
                         const controlTopic = `tenants/demo_tenant/devices/esp32_plant_01/control`;
                         mqttClient.publish(controlTopic, JSON.stringify({ action: 'PUMP_ON', duration_sec: 3 }));
@@ -154,11 +154,11 @@ function initBotPolling(dbPool, mqttClient) {
                         await sendTelegramMessage('💦 *Watering command sent!* (Pump active for 3 seconds)');
                     }
                 }
-                // 指令 3: /photo - 遠端觸發相機拍照與 AI 診斷
+                // Command 3: /photo - Trigger camera capture & AI analysis pipeline
                 else if (command === '/photo') {
                     await sendTelegramMessage('📸 *[Request Sent]* Triggering ESP32-CAM to capture image... Please wait for AI diagnosis.');
 
-                    // 將 Device ID 改為 esp32_plant_01 對齊相機模擬器與全系統 Topic
+                    // Align device identifier with system-wide topic schema
                     const cameraTopic = `tenants/demo_tenant/devices/esp32_plant_01/control`;
                     mqttClient.publish(cameraTopic, JSON.stringify({
                         action: 'CAPTURE_PHOTO',
@@ -170,17 +170,17 @@ function initBotPolling(dbPool, mqttClient) {
                         ['esp32_plant_01', 'TELEGRAM_CAPTURE', 0, 'SUCCESS']
                     );
                 }
-                // 指令 4: /start 或歡迎提示
+                // Command 4: /start or greeting message
                 else if (command === '/start') {
-                    await sendTelegramMessage('👋 Welcome to the AIoT Smart Plant Monitoring Bot!\n\nAvailable commands:\n`/status` - Get real-time status report\n`/water` - Trigger remote watering (3s)\n`/photo` - Trigger ESP32-CAM & AI analysis');
+                    await sendTelegramMessage('Welcome to the AIoT Smart Plant Monitoring Bot!\n\nAvailable commands:\n`/status` - Get real-time status report\n`/water` - Trigger remote watering (3s)\n`/photo` - Trigger ESP32-CAM & AI analysis');
                 } 
-                // 指令 5: 未知指令
+                // Command 5: Fallback unknown command handler
                 else {
-                    await sendTelegramMessage('🤖 Unrecognized command.\n\nPlease choose an option:\n`/status` - Get status report\n`/water` - Trigger watering\n`/photo` - Trigger AI diagnosis');
+                    await sendTelegramMessage('Unrecognized command.\n\nPlease choose an option:\n`/status` - Get status report\n`/water` - Trigger watering\n`/photo` - Trigger AI diagnosis');
                 }
             }
         } catch (err) {
-            // 靜態捕捉輪詢逾時或網路波動
+            // Silently handle polling timeouts or transient network blips
         }
     }, 2000);
 }
