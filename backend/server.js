@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const mqtt = require('mqtt');
 const { Pool } = require('pg');
 const cors = require('cors');
+const Redis = require('ioredis');
 require('dotenv').config();
 
 // 引入 BullMQ 佇列模組
@@ -32,6 +33,53 @@ const io = new Server(server, {
   allowEIO3: true
 });
 
+// 建立 Redis Pub/Sub 監聽器，並補全傳給前端的完整圖片 URL
+const redisSub = new Redis({
+  host: process.env.REDIS_HOST || 'redis',
+  port: parseInt(process.env.REDIS_PORT || '6379'),
+});
+
+redisSub.subscribe('ai_diagnosis_channel', (err, count) => {
+  if (err) {
+    console.error('[Redis Sub] 訂閱 ai_diagnosis_channel 失敗:', err.message);
+  } else {
+    console.log('[Redis Sub] 成功訂閱 ai_diagnosis_channel，準備接收 AI 診斷推播！');
+  }
+});
+
+redisSub.on('message', (channel, message) => {
+  if (channel === 'ai_diagnosis_channel') {
+    try {
+      const diagnosisData = JSON.parse(message);
+      
+      const minioBaseUrl = process.env.MINIO_PUBLIC_URL || 'http://localhost:9000/plant-images';
+      const imgName = diagnosisData.image_name || '';
+
+      // 為 Socket 廣播自動補上前端 (React) 渲染所需的全域圖片網址與格式
+      const formattedData = {
+        time: diagnosisData.timestamp || new Date().toISOString(),
+        device_id: diagnosisData.device_id || 'esp32_plant_01',
+        raw_image_url: `${minioBaseUrl}/${imgName}`,
+        processed_image_url: `${minioBaseUrl}/${imgName}`,
+        image_url: `${minioBaseUrl}/${imgName}`,
+        detections: [{
+          diagnosis: diagnosisData.diagnosis,
+          confidence: diagnosisData.confidence,
+          health_score: diagnosisData.health_score,
+          action_required: diagnosisData.action_required
+        }]
+      };
+
+      console.log('[Backend] 收到 AI 診斷結果，成功格式化並推播給 React:', formattedData);
+
+      // 即時廣播給 React 前端
+      io.emit('ai_diagnosis_result', formattedData);
+    } catch (err) {
+      console.error('[Redis Sub] 解析 AI 診斷結果失敗:', err.message);
+    }
+  }
+});
+
 // TimescaleDB 連線池
 const dbPool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -44,11 +92,10 @@ const dbPool = new Pool({
 // 初始化 DB 並自動建立 actuation_logs 表
 dbPool.connect(async (err, client, release) => {
   if (err) {
-    console.error('❌ DB 連線失敗:', err.stack);
+    console.error('DB 連線失敗:', err.stack);
   } else {
-    console.log('✅ TimescaleDB 連線成功！');
+    console.log('TimescaleDB 連線成功！');
     try {
-      // 自動建表以防控制 API 報錯
       await client.query(`
         CREATE TABLE IF NOT EXISTS actuation_logs (
           id SERIAL PRIMARY KEY,
@@ -59,9 +106,9 @@ dbPool.connect(async (err, client, release) => {
           created_at TIMESTAMPTZ DEFAULT NOW()
         );
       `);
-      console.log('✅ 檢查/建立 actuation_logs 資料表完成！');
+      console.log('檢查/建立 actuation_logs 資料表完成！');
     } catch (tableErr) {
-      console.error('❌ 自動建表失敗:', tableErr.message);
+      console.error('自動建表失敗:', tableErr.message);
     } finally {
       release();
     }
@@ -72,7 +119,7 @@ dbPool.connect(async (err, client, release) => {
 const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883');
 
 mqttClient.on('connect', () => {
-  console.log('✅ 成功連接 EMQX MQTT Broker！');
+  console.log('成功連接 EMQX MQTT Broker！');
   mqttClient.subscribe('tenants/+/devices/+/telemetry');
 });
 
@@ -81,22 +128,24 @@ mqttClient.on('message', async (topic, message) => {
   try {
     const payload = JSON.parse(message.toString());
 
-    // 1. 推入 BullMQ 佇列
     await telemetryQueue.add('process_telemetry', payload, {
       attempts: 3,
       backoff: 1000,
       removeOnComplete: true,
     });
 
-    // 2. Telegram 缺水/低水位異常主動告警檢查
     checkAndTriggerAlert(payload);
 
   } catch (err) {
-    console.error('❌ 處理 MQTT 訊息失敗:', err.message);
+    console.error('處理 MQTT 訊息失敗:', err.message);
   }
 });
 
 // ==================== REST APIs ====================
+
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Backend Server is running!' });
+});
 
 // 1. GET /api/telemetry/recent
 app.get('/api/telemetry/recent', async (req, res) => {
@@ -116,23 +165,20 @@ app.get('/api/telemetry/recent', async (req, res) => {
   }
 });
 
-// 2. GET /api/telemetry/history (多時段降採樣歷史數據 API)
+// 2. GET /api/telemetry/history
 app.get('/api/telemetry/history', async (req, res) => {
   const { range = '24h', device_id = 'esp32_plant_01' } = req.query;
   
   try {
     let query = '';
     if (range === '24h') {
-      // 24小時：撈取原始細粒度數據 (最新 100 筆)
       query = `SELECT time, soil_moisture, temperature, humidity, light_lux, water_level 
                FROM sensor_telemetry WHERE device_id = $1 ORDER BY time DESC LIMIT 100`;
     } else if (range === '7d') {
-      // 7天：撈取 TimescaleDB Continuous Aggregation 每小時平均值
       query = `SELECT bucket AS time, avg_soil_moisture AS soil_moisture, avg_temperature AS temperature, 
                       avg_humidity AS humidity, avg_light_lux AS light_lux, avg_water_level AS water_level 
                FROM sensor_telemetry_hourly WHERE device_id = $1 AND bucket >= NOW() - INTERVAL '7 days' ORDER BY bucket ASC`;
     } else if (range === '30d') {
-      // 30天：撈取 TimescaleDB Continuous Aggregation 每小時平均值
       query = `SELECT bucket AS time, avg_soil_moisture AS soil_moisture, avg_temperature AS temperature, 
                       avg_humidity AS humidity, avg_light_lux AS light_lux, avg_water_level AS water_level 
                FROM sensor_telemetry_hourly WHERE device_id = $1 AND bucket >= NOW() - INTERVAL '30 days' ORDER BY bucket ASC`;
@@ -141,39 +187,38 @@ app.get('/api/telemetry/history', async (req, res) => {
     const dbRes = await dbPool.query(query, [device_id]);
     res.json({ success: true, data: dbRes.rows });
   } catch (err) {
-    console.error('❌ 撈取歷史數據失敗:', err.message);
+    console.error('撈取歷史數據失敗:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 3. GET /api/ai/recent (撈取最新 AI 診斷紀錄)
+// 3. GET /api/ai/recent
 app.get('/api/ai/recent', async (req, res) => {
   try {
-    const deviceId = req.query.device_id || 'esp32_cam_01';
     const limit = parseInt(req.query.limit || '10');
 
+    // 查詢最新紀錄 (不加嚴格的 WHERE，相容不同裝置 ID)
     const query = `
       SELECT time, device_id, raw_image_path, processed_image_path, detections
       FROM ai_image_analyses
-      WHERE device_id = $1
       ORDER BY time DESC
-      LIMIT $2;
+      LIMIT $1;
     `;
-    const result = await dbPool.query(query, [deviceId, limit]);
+    const result = await dbPool.query(query, [limit]);
 
     const minioBaseUrl = process.env.MINIO_PUBLIC_URL || 'http://localhost:9000/plant-images';
 
     const formattedRows = result.rows.map(row => ({
       time: row.time,
       device_id: row.device_id,
-      raw_image_url: `${minioBaseUrl}/${row.raw_image_path}`,
-      processed_image_url: `${minioBaseUrl}/${row.processed_image_url || row.processed_image_path}`,
+      raw_image_url: row.raw_image_path?.startsWith('http') ? row.raw_image_path : `${minioBaseUrl}/${row.raw_image_path}`,
+      processed_image_url: row.processed_image_path?.startsWith('http') ? row.processed_image_path : `${minioBaseUrl}/${row.processed_image_path || row.raw_image_path}`,
       detections: row.detections
     }));
 
     res.json(formattedRows);
   } catch (err) {
-    console.error('❌ 撈取 AI 紀錄失敗:', err.message);
+    console.error('撈取 AI 紀錄失敗:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -199,7 +244,7 @@ app.post('/api/control/water', async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message: '🚫 警告：水箱水位過低 (<=5%)，系統阻止啟動抽水泵以防乾燒！'
+        message: '警告：水箱水位過低 (<=5%)，系統阻止啟動抽水泵以防乾燒！'
       });
     }
 
@@ -223,11 +268,11 @@ app.post('/api/control/water', async (req, res) => {
     // 4. WebSocket 即時推播日誌給前端
     io.emit('new_actuation_log', logRes.rows[0]);
 
-    console.log(`🌊 [控制中心] 已對 ${controlTopic} 發送澆水指令 (${duration_sec}s)`);
+    console.log(`[控制中心] 已對 ${controlTopic} 發送澆水指令 (${duration_sec}s)`);
     res.json({ success: true, message: '澆水指令已下達！', log: logRes.rows[0] });
 
   } catch (err) {
-    console.error('❌ 控制 API 異常:', err.message);
+    console.error('控制 API 異常:', err.message);
     res.status(500).json({ error: '內部伺服器錯誤', details: err.message });
   }
 });
@@ -235,7 +280,8 @@ app.post('/api/control/water', async (req, res) => {
 // 5. POST /api/camera/capture - Web 觸發手動拍照診斷 API
 app.post('/api/camera/capture', async (req, res) => {
   try {
-    const cameraTopic = `tenants/demo_tenant/devices/esp32_cam_01/control`;
+    const cameraTopic = `tenants/demo_tenant/devices/esp32_plant_01/control`;
+
     mqttClient.publish(cameraTopic, JSON.stringify({
       action: 'CAPTURE_PHOTO',
       timestamp: new Date().toISOString()
@@ -243,17 +289,18 @@ app.post('/api/camera/capture', async (req, res) => {
 
     await dbPool.query(
       `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) VALUES ($1, $2, $3, $4)`,
-      ['esp32_cam_01', 'WEB_CAPTURE', 0, 'SUCCESS']
+      ['esp32_plant_01', 'WEB_CAPTURE', 0, 'SUCCESS']
     );
 
+    console.log(`[控制中心] 已成功對 ${cameraTopic} 發送拍照指令`);
     res.json({ success: true, message: 'Camera capture triggered successfully.' });
   } catch (err) {
-    console.error('❌ 觸發拍照 API 失敗:', err.message);
+    console.error('觸發拍照 API 失敗:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 6. GET /api/control/logs - 取得致動歷史日誌 API
+// 6. GET /api/control/logs
 app.get('/api/control/logs', async (req, res) => {
   try {
     const result = await dbPool.query(
@@ -261,49 +308,60 @@ app.get('/api/control/logs', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('❌ 讀取控制日誌失敗:', err.message);
+    console.error('讀取控制日誌失敗:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== AI 診斷紀錄查詢 API (已修正欄位) ====================
+// ==================== AI 診斷紀錄查詢 API ====================
 app.get('/api/ai-analyses', async (req, res) => {
   try {
-    const deviceId = req.query.device_id || 'esp32_plant_01';
     const limit = parseInt(req.query.limit) || 6;
 
-    // 💡 修正：移除不存在的 id 欄位，改以 time 進行倒序排序 
     const query = `
       SELECT time, device_id, raw_image_path, processed_image_path, detections 
       FROM ai_image_analyses 
-      WHERE device_id = $1 
       ORDER BY time DESC 
-      LIMIT $2;
+      LIMIT $1;
     `;
-    const { rows } = await dbPool.query(query, [deviceId, limit]);
-    res.json(rows);
+    const { rows } = await dbPool.query(query, [limit]);
+
+    const minioBaseUrl = process.env.MINIO_PUBLIC_URL || 'http://localhost:9000/plant-images';
+
+    const formattedRows = rows.map(row => {
+      const rawImg = row.raw_image_path || '';
+      const procImg = row.processed_image_path || row.raw_image_path || '';
+
+      return {
+        ...row,
+        raw_image_url: rawImg.startsWith('http') ? rawImg : `${minioBaseUrl}/${rawImg}`,
+        processed_image_url: procImg.startsWith('http') ? procImg : `${minioBaseUrl}/${procImg}`,
+        image_url: rawImg.startsWith('http') ? rawImg : `${minioBaseUrl}/${rawImg}`
+      };
+    });
+
+    res.json(formattedRows);
   } catch (err) {
-    console.error("❌ 抓取 AI 分析紀錄失敗:", err);
+    console.error("抓取 AI 分析紀錄失敗:", err);
     res.status(500).json({ error: "無法讀取 AI 診斷紀錄" });
   }
 });
 
 // 相容舊版 API 路徑
-app.get('/api/ai/recent', async (req, res) => {
-  const deviceId = req.query.device_id || 'esp32_plant_01';
+app.get('/api/ai/recent-redirect', async (req, res) => {
   const limit = req.query.limit || 6;
-  res.redirect(`/api/ai-analyses?device_id=${deviceId}&limit=${limit}`);
+  res.redirect(`/api/ai-analyses?limit=${limit}`);
 });
+
 // ==================== Socket.io 連線 ====================
 io.on('connection', (socket) => {
-  console.log(`🔌 Web 儀表板已連線: ${socket.id}`);
+  console.log(`Web 儀表板已連線: ${socket.id}`);
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 server.listen(PORT, () => {
-  console.log(`🚀 後端伺服器已啟動於 http://localhost:${PORT}`);
+  console.log(`後端伺服器已啟動於 ${PORT}`);
 
-  // 啟動 Telegram Bot 互動監聽
   initBotPolling(dbPool, mqttClient);
   initTelemetryWorker(dbPool, io, mqttClient);
 });
