@@ -13,47 +13,47 @@ worker_instance = None
 is_running = True
 
 def run_worker_loop():
-    """在獨立線程中運行的 Redis 佇列監聽迴圈"""
+    """Background Redis queue polling loop executed in a dedicated daemon thread."""
     global worker_instance, is_running
-    print("🚀 [FastAPI Startup] 正在背景啟動 Redis AI Worker...", flush=True)
+    print("[FastAPI Startup] Initializing background Redis AI Worker...", flush=True)
     
-    # 延遲 2 秒等待外部服務準備完畢並實例化
+    # Allow 2 seconds for external dependencies to stabilize before instantiation
     time.sleep(2)
     try:
         worker_instance = PlantAIWorker()
-        print("✅ [FastAPI Lifespan] 背景 Redis Worker 初始化完畢，開始監聽佇列...", flush=True)
+        print("[FastAPI Lifespan] Background Redis Worker initialized. Listening for queue events...", flush=True)
     except Exception as init_err:
-        print(f"❌ [FastAPI Lifespan] Worker 初始化失敗: {init_err}", flush=True)
+        print(f"[FastAPI Lifespan] Worker initialization failed: {init_err}", flush=True)
         return
 
     while is_running:
         try:
-            # 監聽 Redis 佇列
+            # Poll Redis task queues using blocking pop
             task = worker_instance.redis_client.blpop(['bull:aiVisionQueue:wait', 'aiVisionQueue', 'bull:aiQueue:wait'], timeout=2)
             if task and len(task) > 1 and task[1] is not None:
                 job_raw = task[1].decode('utf-8')
-                print(f"📥 [FastAPI Worker] 收到背景佇列任務: {job_raw}", flush=True)
+                print(f"[FastAPI Worker] Processing background queue task: {job_raw}", flush=True)
                 worker_instance.process_task(job_raw)
         except Exception as e:
             if "Timeout reading from socket" not in str(e) and "timed out" not in str(e):
-                print(f"⚠️ 背景 Worker 監聽例外: {str(e)}", flush=True)
+                print(f"[FastAPI Worker Error] Queue polling exception: {str(e)}", flush=True)
         time.sleep(0.1)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI 生命週期管理"""
+    """Manage application lifecycle events for background threads and service states."""
     global is_running
     is_running = True
     
-    # 啟動背景 Worker Thread
+    # Spawn background Redis worker thread
     worker_thread = threading.Thread(target=run_worker_loop, daemon=True)
     worker_thread.start()
-    print("✅ [FastAPI] 整合型微服務啟動完成（含 REST API 與 Redis 佇列監聽器）", flush=True)
+    print("[FastAPI] Unified microservice started (REST API & Redis Queue Worker).", flush=True)
     
     yield
     
     is_running = False
-    print("🛑 [FastAPI] 正關閉背景 Redis Worker...", flush=True)
+    print("[FastAPI] Shutting down background Redis Worker...", flush=True)
 
 app = FastAPI(
     title="AIoT Plant Diagnosis REST API & Worker", 
@@ -69,7 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 啟動單例 AI 引擎
+# Instantiate singleton AI inference engine
 ai_engine = PlantAIEngine()
 
 class DiagnosisResponse(BaseModel):
@@ -100,4 +100,4 @@ async def predict(
             action_required=res["action_required"]
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"推論失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Inference execution failed: {str(e)}")

@@ -7,7 +7,11 @@ import onnxruntime as ort
 from PIL import Image
 
 class PlantAIEngine:
-    """生產級 AI 雙引擎微服務類別 (Fine-tuned YOLOv8 Classification + XGBoost)"""
+    """Multimodal dual-engine AI microservice.
+    
+    Combines fine-tuned YOLOv8 classification (ONNX Runtime) for visual diagnostics
+    and a trained XGBoost regressor for environmental telemetry health scoring.
+    """
 
     CLASS_NAMES = ['Background', 'Diseased_or_Blight', 'Healthy', 'Yellowing_or_Drying']
 
@@ -20,37 +24,39 @@ class PlantAIEngine:
         self.xgb_model = self._load_xgb_model()
 
     def _load_onnx_model(self):
-        """載入 ONNX Runtime Session"""
+        """Initialize the ONNX Runtime inference session."""
         try:
             if not os.path.exists(self.vision_model_path):
-                print(f"[PlantAIEngine Error] ONNX 檔案不存在: [{self.vision_model_path}]")
+                print(f"[PlantAIEngine Error] ONNX model artifact not found: [{self.vision_model_path}]")
                 return None
             session = ort.InferenceSession(self.vision_model_path, providers=['CPUExecutionProvider'])
-            print(f"[PlantAIEngine] ONNX Runtime Session 載入成功: [{self.vision_model_path}]")
+            print(f"[PlantAIEngine] ONNX Runtime session initialized successfully: [{self.vision_model_path}]")
             return session
         except Exception as e:
-            print(f"[PlantAIEngine] ONNX 載入失敗: {e}")
+            print(f"[PlantAIEngine] Failed to load ONNX model: {e}")
             return None
 
     def _load_xgb_model(self):
-        """載入 XGBoost 模型"""
+        """Load the trained XGBoost regression model artifact."""
         try:
             if not os.path.exists(self.tabular_model_path):
-                print(f"[PlantAIEngine Error] XGBoost 檔案不存在: [{self.tabular_model_path}]")
+                print(f"[PlantAIEngine Error] XGBoost model artifact not found: [{self.tabular_model_path}]")
                 return None
             model = joblib.load(self.tabular_model_path)
-            print(f"[PlantAIEngine] XGBoost 模型載入成功: [{self.tabular_model_path}]")
+            print(f"[PlantAIEngine] XGBoost model loaded successfully: [{self.tabular_model_path}]")
             return model
         except Exception as e:
-            print(f"[PlantAIEngine] XGBoost 載入失敗: {e}")
+            print(f"[PlantAIEngine] Failed to load XGBoost model: {e}")
             return None
 
     def preprocess_image(self, image_source, target_size=(320, 320), use_imagenet_norm=False):
-        """
-        YOLOv8 Classification 前處理：
-        1. 格式相容性轉換與 Resize 至 320x320
-        2. RGB 轉換與 [0, 1] 歸一化
-        3. 擴展 Batch 維度 -> (1, C, H, W)
+        """Preprocess input images for YOLOv8 classification inference.
+        
+        Steps:
+        1. Parse input source (bytes, file path, ndarray) and convert to RGB.
+        2. Resize to target dimension (320x320) matching the fine-tuned model export.
+        3. Normalize pixel values to [0.0, 1.0].
+        4. Transpose (H, W, C) -> (C, H, W) and expand batch dimension -> (1, C, H, W).
         """
         if isinstance(image_source, bytes):
             img = Image.open(io.BytesIO(image_source)).convert('RGB')
@@ -63,73 +69,73 @@ class PlantAIEngine:
         else:
             img = Image.fromarray(np.uint8(image_source)).convert('RGB')
 
-        # 1. Resize 至模型的 320x320 尺寸
+        # Resize to target input resolution (320x320)
         img = img.resize(target_size, Image.BILINEAR)
         img_data = np.array(img).astype(np.float32) / 255.0
 
-        # 2. 標準化（若訓練時未特製 transform，YOLOv8 預設不需 ImageNet mean/std）
+        # Optional ImageNet standard normalization (mean/std)
         if use_imagenet_norm:
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
             img_data = (img_data - mean) / std
 
-        # 3. Transpose (H, W, C) -> (C, H, W) 並擴展 Batch 維度 -> (1, C, H, W)
+        # Transpose (H, W, C) -> (C, H, W) and expand batch dimension -> (1, C, H, W)
         img_data = np.transpose(img_data, (2, 0, 1))
         return np.expand_dims(img_data, axis=0).astype(np.float32)
 
     @staticmethod
     def _softmax(x):
-        """計算 Softmax 機率分佈"""
+        """Compute numerically stable softmax probability distribution."""
         e_x = np.exp(x - np.max(x))
         return e_x / e_x.sum(axis=-1, keepdims=True)
 
     def predict(self, image_source, soil=50.0, temp=25.0, hum=60.0):
-        """執行 AI 雙引擎多模態預估與交叉決策"""
+        """Execute multimodal inference and cross-domain decision matrix."""
         diagnosis_label = "Uncertain"
         confidence = 0.0
 
-        # 1. ONNX 視覺推論 (YOLOv8 Fine-tuned Classification)
+        # Visual inference via fine-tuned YOLOv8 classification (ONNX)
         if self.ort_session:
             try:
                 input_data = self.preprocess_image(image_source, target_size=(320, 320), use_imagenet_norm=False)
                 input_name = self.ort_session.get_inputs()[0].name
                 raw_output = self.ort_session.run(None, {input_name: input_data})[0]
 
-                # 計算機率分佈
+                # Compute class probabilities via Softmax
                 logits = raw_output.flatten()
                 probs = self._softmax(logits)
                 top1_idx = int(np.argmax(probs))
                 confidence = float(probs[top1_idx])
 
-                # 閾值過濾與標籤判定
+                # Confidence threshold filtering and label assignment
                 if confidence >= self.conf_threshold and top1_idx < len(self.CLASS_NAMES):
                     diagnosis_label = self.CLASS_NAMES[top1_idx]
                 else:
                     diagnosis_label = "Uncertain"
 
-                print(f"[ONNX 視覺診斷] 預測類別: {diagnosis_label} (置信度: {confidence:.2%})", flush=True)
+                print(f"[ONNX Vision Diagnosis] Predicted class: {diagnosis_label}", flush=True)
 
             except Exception as e:
-                print(f"[PlantAIEngine Exception] ONNX 推論失敗: {e}", flush=True)
+                print(f"[PlantAIEngine Exception] ONNX inference execution failed: {e}", flush=True)
                 diagnosis_label = "Uncertain"
         else:
-            print("[PlantAIEngine Warning] ort_session 為 None！", flush=True)
+            print("[PlantAIEngine Warning] ort_session is None. Ensure 'best.onnx' is present in the working directory.", flush=True)
             
-        # 2. XGBoost 環境數據評估
+        # Environmental telemetry evaluation via XGBoost
         health_score = 3.5
         if self.xgb_model:
             try:
                 input_features = np.array([[float(soil), float(temp), float(hum)]], dtype=np.float32)
                 raw_score = float(self.xgb_model.predict(input_features)[0])
                 health_score = round(max(1.0, min(5.0, raw_score)), 1)
-                print(f"[XGBoost 推論成功] 輸入: ({soil}%, {temp}°C, {hum}%) -> 評分: {health_score}")
+                print(f"[XGBoost Evaluation Success] Inputs: ({soil}%, {temp}°C, {hum}%) -> Health Score: {health_score}")
             except Exception as e:
-                print(f"[PlantAIEngine Exception] XGBoost 評估失敗: {e}")
+                print(f"[PlantAIEngine Exception] XGBoost regression failed: {e}")
                 health_score = 3.5
         else:
-            print("[PlantAIEngine Warning] xgb_model 為 None！")
+            print("[PlantAIEngine Warning] xgb_model is None. Ensure 'tabular_health_scorer.joblib' is present in the working directory.")
 
-        # 3. 交叉決策矩陣
+        # Cross-domain decision matrix
         action_required = "NORMAL"
         if diagnosis_label == "Yellowing_or_Drying" and soil < 35.0:
             action_required = "PUMP_WATER"
