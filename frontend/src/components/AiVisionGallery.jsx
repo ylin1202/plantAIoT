@@ -1,3 +1,4 @@
+import io from 'socket.io-client';
 import React, { useState, useEffect } from 'react';
 import { Camera, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 
@@ -11,7 +12,6 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
 
   const fetchAiRecords = async () => {
     try {
-      // 請求 AI 診斷紀錄 API (向後端要求 3 筆即可)
       let res = await fetch(`${SOCKET_SERVER_URL}/api/ai-analyses?device_id=${deviceId}&limit=3`);
       if (!res.ok) {
         res = await fetch(`${SOCKET_SERVER_URL}/api/ai/recent?device_id=${deviceId}&limit=3`);
@@ -30,20 +30,42 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
 
   useEffect(() => {
     fetchAiRecords();
-    const interval = setInterval(fetchAiRecords, 5000); // 5秒自動刷新
-    return () => clearInterval(interval);
+
+    // 1. 建立 Socket 監聽
+    const socket = io(SOCKET_SERVER_URL);
+
+    // 2. 收到 AI Worker 即時推播時，刷新紀錄
+    socket.on('ai_diagnosis_result', (data) => {
+      console.log('[React Gallery] 收到 AI 即時推播，刷新紀錄...', data);
+      fetchAiRecords();
+    });
+
+    const interval = setInterval(fetchAiRecords, 5000);
+
+    return () => {
+      clearInterval(interval);
+      socket.disconnect();
+    };
   }, [deviceId]);
 
-  // 解析 MinIO 圖片完整網址
+  // 補回遺漏的 getImageUrl 函式
   const getImageUrl = (item) => {
-    const imgPath = item.processed_image_path || item.processed_image_url || item.raw_image_path || item.raw_image_url;
-    
-    if (!imgPath) return 'https://via.placeholder.com/300x200?text=No+Image';
-    
-    if (imgPath.startsWith('http')) {
-      return imgPath;
+    if (!item) return 'https://via.placeholder.com/300x200?text=No+Data';
+
+    // 1. 優先使用全域完整的 HTTP 網址 (來自 Backend / Socket 拼好的完整路徑)
+    const fullUrl = item.processed_image_url || item.raw_image_url || item.image_url;
+    if (fullUrl && fullUrl.startsWith('http')) {
+      return fullUrl;
     }
-    return `${MINIO_ENDPOINT}/${BUCKET_NAME}/${imgPath}`;
+
+    // 2. 次要使用純檔名自動拼湊 MinIO 網址
+    const imgPath = item.processed_image_path || item.raw_image_path;
+    if (imgPath) {
+      if (imgPath.startsWith('http')) return imgPath;
+      return `${MINIO_ENDPOINT}/${BUCKET_NAME}/${imgPath}`;
+    }
+
+    return 'https://via.placeholder.com/300x200?text=No+Image';
   };
 
   // 解析 Detections 陣列
@@ -119,7 +141,7 @@ export default function AiVisionGallery({ deviceId = 'esp32_plant_01' }) {
                     alt="AI Diagnostic"
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                     onError={(e) => {
-                      console.error("圖片載入失敗，試圖退回原始圖片網址:", imageUrl);
+                      console.error("圖片載入失敗:", imageUrl);
                       e.target.src = 'https://via.placeholder.com/300x200?text=MinIO+Load+Error';
                     }}
                   />

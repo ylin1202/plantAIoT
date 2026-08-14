@@ -337,7 +337,7 @@ export default function App() {
       </div>
 
       {/* AI 診斷畫廊 */}
-      <AiVisionGallery deviceId="esp32_cam_01" />
+      <AiVisionGallery deviceId="esp32_plant_01" />
     </div>
   );
 }
