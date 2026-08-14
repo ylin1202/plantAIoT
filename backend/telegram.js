@@ -158,7 +158,8 @@ function initBotPolling(dbPool, mqttClient) {
                 else if (command === '/photo') {
                     await sendTelegramMessage('📸 *[Request Sent]* Triggering ESP32-CAM to capture image... Please wait for AI diagnosis.');
 
-                    const cameraTopic = `tenants/demo_tenant/devices/esp32_cam_01/control`;
+                    // 將 Device ID 改為 esp32_plant_01 對齊相機模擬器與全系統 Topic
+                    const cameraTopic = `tenants/demo_tenant/devices/esp32_plant_01/control`;
                     mqttClient.publish(cameraTopic, JSON.stringify({
                         action: 'CAPTURE_PHOTO',
                         timestamp: new Date().toISOString()
@@ -166,7 +167,7 @@ function initBotPolling(dbPool, mqttClient) {
 
                     await dbPool.query(
                         `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) VALUES ($1, $2, $3, $4)`,
-                        ['esp32_cam_01', 'TELEGRAM_CAPTURE', 0, 'SUCCESS']
+                        ['esp32_plant_01', 'TELEGRAM_CAPTURE', 0, 'SUCCESS']
                     );
                 }
                 // 指令 4: /start 或歡迎提示
