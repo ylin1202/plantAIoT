@@ -45,7 +45,7 @@ const BUCKET_NAME = process.env.MINIO_BUCKET || 'plant-images';
 const DEVICE_ID = process.env.DEVICE_ID || 'esp32_plant_01';
 const CONTROL_TOPIC = `tenants/demo_tenant/devices/${DEVICE_ID}/control`;
 
-const LOCAL_FOLDER = __dirname;
+const ASSETS_FOLDER = path.join(__dirname, '../assets');
 
 // Download a default sample plant image if no local snapshot is found
 function downloadFallbackImage(targetPath) {
@@ -75,16 +75,16 @@ function downloadFallbackImage(targetPath) {
   });
 }
 
-// Dynamically resolve snapshot source image
+// Dynamically resolve snapshot source image from assets folder
 async function getNextSampleImage() {
-  const targetImage = path.join(LOCAL_FOLDER, 'plant1.jpg');
+  const targetImage = path.join(ASSETS_FOLDER, 'plant1.jpg');
   
   if (fs.existsSync(targetImage)) {
-    console.log(`[ESP32-CAM Simulator] Using local sample snapshot: plant1.jpg`);
+    console.log(`[ESP32-CAM Simulator] Using local sample snapshot: ${targetImage}`);
     return targetImage;
   }
 
-  const defaultSamplePath = path.join(LOCAL_FOLDER, 'sample_plant.jpg');
+  const defaultSamplePath = path.join(ASSETS_FOLDER, 'sample_plant.jpg');
   if (fs.existsSync(defaultSamplePath)) {
     return defaultSamplePath;
   }
