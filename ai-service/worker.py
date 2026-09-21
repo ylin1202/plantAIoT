@@ -21,7 +21,7 @@ class PlantAIWorker:
             tabular_model_path=os.getenv('TABULAR_MODEL_PATH', 'tabular_health_scorer.joblib')
         )
         print("[AI Worker] PlantAIEngine initialized successfully.", flush=True)
-        
+
         self.redis_client = self._init_redis()
         self.minio_client = self._init_minio()
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -42,7 +42,7 @@ class PlantAIWorker:
     def _init_minio(self):
         """Initialize MinIO client, normalizing localhost endpoints for container networks."""
         endpoint = os.getenv('MINIO_ENDPOINT', 'minio:9000')
-        
+
         # Fallback guard: resolve localhost references to internal Docker service hostname
         if 'localhost' in endpoint or '127.0.0.1' in endpoint:
             endpoint = 'minio:9000'
@@ -77,7 +77,7 @@ class PlantAIWorker:
         except Exception as e:
             print(f"[Telegram Bot] Dispatch failed: {e}", flush=True)
 
-    def notify_backend_socket(self, device_id, image_name, res):
+    def notify_backend_socket(self, device_id, image_name, res, water_level=None):
         """Publish diagnostic inference results to Redis Pub/Sub channel for real-time frontend propagation."""
         try:
             payload = {
@@ -86,6 +86,7 @@ class PlantAIWorker:
                 "diagnosis": res["diagnosis"],
                 "health_score": res["health_score"],
                 "action_required": res["action_required"],
+                "water_level": water_level,
                 "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ')
             }
             self.redis_client.publish('ai_diagnosis_channel', json.dumps(payload))
@@ -95,31 +96,33 @@ class PlantAIWorker:
 
     def fetch_latest_telemetry(self, device_id):
         """Query TimescaleDB for the latest telemetry metrics associated with the target device."""
-        soil, temp, hum = 50.0, 25.0, 60.0
+        soil, temp, hum, water_level = 50.0, 25.0, 60.0, None
         try:
             conn = self.get_db_connection()
             cur = conn.cursor()
             cur.execute("""
-                SELECT soil_moisture, temperature, humidity 
-                FROM sensor_telemetry 
+                SELECT soil_moisture, temperature, humidity, water_level
+                FROM sensor_telemetry
+                WHERE device_id = %s
                 ORDER BY time DESC LIMIT 1;
-            """)
+            """, (device_id,))
             latest_sensor = cur.fetchone()
             if latest_sensor:
                 soil, temp, hum = float(latest_sensor[0]), float(latest_sensor[1]), float(latest_sensor[2])
-                print(f"[AI Worker] Telemetry fetched successfully -> Soil: {soil}%, Temp: {temp}°C, Humidity: {hum}%", flush=True)
+                water_level = float(latest_sensor[3]) if latest_sensor[3] is not None else None
+                print(f"[AI Worker] Telemetry fetched successfully -> Soil: {soil}%, Temp: {temp}°C, Humidity: {hum}%, Water: {water_level}%", flush=True)
             cur.close()
             conn.close()
         except Exception as e:
             print(f"[AI Worker] Failed to query telemetry, falling back to defaults: {e}", flush=True)
-        return soil, temp, hum
+        return soil, temp, hum, water_level
 
     def save_analysis_to_db(self, device_id, image_name, processed_image_name, res):
         """Persist visual inference results and telemetry analysis into TimescaleDB."""
         try:
             conn = self.get_db_connection()
             cur = conn.cursor()
-            
+
             detections = [{
                 "diagnosis": res["diagnosis"],
                 "health_score": res["health_score"],
@@ -169,14 +172,16 @@ class PlantAIWorker:
                 print(f"[AI Worker] Failed to download image from MinIO: {image_name}", flush=True)
                 return
 
-            soil, temp, hum = self.fetch_latest_telemetry(device_id)
+            soil, temp, hum, water_level = self.fetch_latest_telemetry(device_id)
             res = self.ai_engine.predict(local_input, soil, temp, hum)
 
             # Persist results into TimescaleDB
             self.save_analysis_to_db(device_id, image_name, image_name, res)
 
-            # Broadcast updates via Redis Pub/Sub for frontend real-time refresh
-            self.notify_backend_socket(device_id, image_name, res)
+            # Broadcast updates via Redis Pub/Sub for frontend real-time refresh.
+            # Includes water_level so the backend can safety-check before acting
+            # on an AI-flagged PUMP_WATER advisory (see server.js).
+            self.notify_backend_socket(device_id, image_name, res, water_level=water_level)
 
             # Dispatch automated alert report via Telegram
             status_emoji = "🟢" if res["diagnosis"] == "Healthy" else "⚠️"

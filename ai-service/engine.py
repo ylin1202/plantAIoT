@@ -15,11 +15,10 @@ class PlantAIEngine:
 
     CLASS_NAMES = ['Background', 'Diseased_or_Blight', 'Healthy', 'Yellowing_or_Drying']
 
-    def __init__(self, vision_model_path='best.onnx', tabular_model_path='tabular_health_scorer.joblib', conf_threshold=0.5):
+    def __init__(self, vision_model_path='best.onnx', tabular_model_path='tabular_health_scorer.joblib'):
         self.vision_model_path = vision_model_path
         self.tabular_model_path = tabular_model_path
-        self.conf_threshold = conf_threshold
-        
+
         self.ort_session = self._load_onnx_model()
         self.xgb_model = self._load_xgb_model()
 
@@ -50,14 +49,7 @@ class PlantAIEngine:
             return None
 
     def preprocess_image(self, image_source, target_size=(320, 320), use_imagenet_norm=False):
-        """Preprocess input images for YOLOv8 classification inference.
-        
-        Steps:
-        1. Parse input source (bytes, file path, ndarray) and convert to RGB.
-        2. Resize to target dimension (320x320) matching the fine-tuned model export.
-        3. Normalize pixel values to [0.0, 1.0].
-        4. Transpose (H, W, C) -> (C, H, W) and expand batch dimension -> (1, C, H, W).
-        """
+        """Preprocess input images for YOLOv8 classification inference."""
         if isinstance(image_source, bytes):
             img = Image.open(io.BytesIO(image_source)).convert('RGB')
         elif isinstance(image_source, str):
@@ -89,38 +81,39 @@ class PlantAIEngine:
         e_x = np.exp(x - np.max(x))
         return e_x / e_x.sum(axis=-1, keepdims=True)
 
+    def _predict_vision(self, image_source):
+        """Run YOLOv8-cls inference through ONNX Runtime.
+
+        Returns the top-1 class label. Falls back to "Unknown" when the
+        vision model is unavailable or inference fails.
+        """
+        if self.ort_session is None:
+            print("[PlantAIEngine Warning] ort_session is None; vision model not loaded.", flush=True)
+            return "Unknown"
+
+        try:
+            x = self.preprocess_image(image_source)
+            input_name = self.ort_session.get_inputs()[0].name
+            out = np.asarray(self.ort_session.run(None, {input_name: x})[0][0], dtype=np.float32)
+
+            # Ultralytics-exported classifiers usually output probabilities already;
+            # only apply softmax if the output does not already sum to ~1.
+            probs = out if abs(float(out.sum()) - 1.0) < 1e-3 else self._softmax(out)
+
+            idx = int(np.argmax(probs))
+            label = self.CLASS_NAMES[idx]
+            print(f"[PlantAIEngine] Visual diagnosis: {label}", flush=True)
+            return label
+        except Exception as e:
+            print(f"[PlantAIEngine Exception] ONNX inference failed: {e}", flush=True)
+            return "Unknown"
+
     def predict(self, image_source, soil=50.0, temp=25.0, hum=60.0):
         """Execute multimodal inference and cross-domain decision matrix."""
-        diagnosis_label = "Uncertain"
-        confidence = 0.0
+        
+        # Visual diagnosis via YOLOv8-cls (ONNX Runtime)
+        diagnosis_label = self._predict_vision(image_source)
 
-        # Visual inference via fine-tuned YOLOv8 classification (ONNX)
-        if self.ort_session:
-            try:
-                input_data = self.preprocess_image(image_source, target_size=(320, 320), use_imagenet_norm=False)
-                input_name = self.ort_session.get_inputs()[0].name
-                raw_output = self.ort_session.run(None, {input_name: input_data})[0]
-
-                # Compute class probabilities via Softmax
-                logits = raw_output.flatten()
-                probs = self._softmax(logits)
-                top1_idx = int(np.argmax(probs))
-                confidence = float(probs[top1_idx])
-
-                # Confidence threshold filtering and label assignment
-                if confidence >= self.conf_threshold and top1_idx < len(self.CLASS_NAMES):
-                    diagnosis_label = self.CLASS_NAMES[top1_idx]
-                else:
-                    diagnosis_label = "Uncertain"
-
-                print(f"[ONNX Vision Diagnosis] Predicted class: {diagnosis_label}", flush=True)
-
-            except Exception as e:
-                print(f"[PlantAIEngine Exception] ONNX inference execution failed: {e}", flush=True)
-                diagnosis_label = "Uncertain"
-        else:
-            print("[PlantAIEngine Warning] ort_session is None. Ensure 'best.onnx' is present in the working directory.", flush=True)
-            
         # Environmental telemetry evaluation via XGBoost
         health_score = 3.5
         if self.xgb_model:

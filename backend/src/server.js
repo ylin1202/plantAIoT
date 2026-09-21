@@ -7,17 +7,38 @@ const cors = require('cors');
 const Redis = require('ioredis');
 require('dotenv').config();
 
+
+const rateLimit = require('express-rate-limit');
+const client = require('prom-client');
+
 // Import BullMQ worker and queue modules
 const { telemetryQueue, initTelemetryWorker } = require('./queue');
 
 // Import Telegram bot polling service
 const { initBotPolling } = require('./telegram');
 
+// Import shared watering executor (cooldown + dry-run safety), also used by
+// the sensor-threshold rule inside queue.js -> automationEngine.js
+const { attemptWatering } = require('./automationEngine');
+
 const app = express();
 
 // Standard CORS and JSON parsing
 app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json());
+
+// Prometheus (CPU, Memory, Event Loop)
+const collectDefaultMetrics = client.collectDefaultMetrics;
+collectDefaultMetrics({ timeout: 5000 });
+
+// Rate Limiting
+const controlRateLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: 10, // 10 times per window per IP
+  message: { error: 'Too many requests, please slow down.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const server = http.createServer(app);
 
@@ -40,7 +61,7 @@ redisSub.subscribe('ai_diagnosis_channel', (err) => {
   }
 });
 
-redisSub.on('message', (channel, message) => {
+redisSub.on('message', async (channel, message) => {
   if (channel === 'ai_diagnosis_channel') {
     try {
       const diagnosisData = JSON.parse(message);
@@ -62,6 +83,21 @@ redisSub.on('message', (channel, message) => {
 
       console.log('[Backend] AI diagnosis broadcasted to React clients:', formattedData.device_id);
       io.emit('ai_diagnosis_result', formattedData);
+
+      // AI-vision-triggered watering advisory: engine.py flags action_required
+      // when it sees leaf yellowing combined with low soil moisture. Route it
+      // through the SAME cooldown/dry-run-safety executor used by the
+      // sensor-threshold rule, so the two trigger sources cannot race each
+      // other or double-actuate the pump.
+      if (diagnosisData.action_required === 'PUMP_WATER') {
+        const waterLevel = diagnosisData.water_level;
+        if (waterLevel == null) {
+          console.warn('[AI Vision Trigger] Missing water_level in diagnosis payload; skipping automated watering for safety.');
+        } else {
+          console.log(`[AI Vision Trigger] engine.py flagged PUMP_WATER for ${diagnosisData.device_id}. Evaluating watering.`);
+          await attemptWatering(diagnosisData.device_id, waterLevel, mqttClient, dbPool, 'AI_VISION');
+        }
+      }
     } catch (err) {
       console.error('[Redis Sub] Failed to parse AI diagnosis payload:', err.message);
     }
@@ -131,6 +167,12 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'AIoT Plant Monitor API Server is active.' });
 });
 
+// Prometheus metrics endpoint for scraping
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
+});
+
 // GET /api/telemetry/recent
 app.get('/api/telemetry/recent', async (req, res) => {
   try {
@@ -185,7 +227,7 @@ app.get('/api/ai/recent', fetchAiAnalyses);
 app.get('/api/ai-analyses', fetchAiAnalyses);
 
 // POST /api/control/water - Manual remote watering control
-app.post('/api/control/water', async (req, res) => {
+app.post('/api/control/water', controlRateLimiter, async (req, res) => {
   const { device_id = 'esp32_plant_01', tenant_id = 'demo_tenant', duration_sec = 3 } = req.body;
 
   try {
@@ -221,7 +263,7 @@ app.post('/api/control/water', async (req, res) => {
 
     // Persist execution log into TimescaleDB
     const logRes = await dbPool.query(
-      `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status) 
+      `INSERT INTO actuation_logs (device_id, action_type, duration_sec, status)
        VALUES ($1, $2, $3, $4) RETURNING *`,
       [device_id, 'MANUAL_WATER', duration_sec, 'SUCCESS']
     );
@@ -238,7 +280,7 @@ app.post('/api/control/water', async (req, res) => {
 });
 
 // POST /api/camera/capture - Web-triggered manual camera capture and AI diagnosis
-app.post('/api/camera/capture', async (req, res) => {
+app.post('/api/camera/capture', controlRateLimiter, async (req, res) => {
   try {
     const cameraTopic = 'tenants/demo_tenant/devices/esp32_plant_01/control';
 
