@@ -75,7 +75,7 @@ This project is a full-stack, Edge-to-Cloud AIoT plant monitoring platform. The 
              | • XGBoost Health Scoring  |                                v
              | • Decision Engine         |                  +----------------------------+
              +------------+--------------+                  | React Dashboard             |
-                          |                                 | (Socket.IO telemetry_update) |
+                          |                                 | (Socket.IO telemetry_update)|
                           v                                 +----------------------------+
              +---------------------------+
              | TimescaleDB                |
